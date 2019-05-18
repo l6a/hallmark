@@ -1,0 +1,12 @@
+*
+!*/
+
+!*.*py
+!*file
+!*.y*ml
+
+__pycache__/
+*.egg-info/
+
+!*.ipynb
+.ipynb_checkpoints/

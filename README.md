@@ -49,8 +49,15 @@ inspect by standard Unix utilities and python functions.  E.g.,
     SR1/LICENSE.txt
     SR1/README.md
     SR1/run.sh
+    bash$ cat SR1/README.md
+    # First M87 EHT Results: Calibrated Data
+    ...
 
 or in python
 
     >>> sr1
-    {'EHTC_FirstM87Results_Apr2019_txt.tgz': <data object>, ..., 'run.sh': <data object>}
+    {'EHTC_FirstM87Results_Apr2019_txt.tgz': <data object>, ..., 'README.md': <data object>, 'run.sh': <data object>}
+    >>> f = sr1['README.md']
+    >>> str(f)
+    # First M87 EHT Results: Calibrated Data
+    ...

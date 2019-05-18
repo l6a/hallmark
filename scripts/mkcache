@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+
+if test "$#" -ne 1; then
+	echo "Usage: $0 [repository]"
+	exit 0
+fi
+
+target="${1%/}"
+
+if test ! -d "$target"; then
+	echo "\"$target\" is not a repository.  QUIT."
+	exit 1
+fi
+
+cache="${target}-cache"
+
+echo -n "Building cache... "
+find "$target" -type f > "$cache"
+echo "DONE"

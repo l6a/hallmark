@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+
+if test "$#" -eq 0; then
+	echo "Usage: $0 [repository]"
+	exit 0
+fi
+
+last="${@: -1}"
+target="${last%/}"
+if test ! -d "$target"; then
+	echo "\"$target\" is not a repository.  QUIT."
+	exit 1
+fi
+
+cache="${target}-cache"
+if test ! -f "$cache"; then
+	echo 'Repository cache does not exist; run `mkcache` to create cache.'
+	exit 0
+fi
+
+pattern="//"
+for arg in "${@:1:${#}-1}"; do
+	pattern="$pattern && /$arg/"
+done
+awk "$pattern" "$cache"

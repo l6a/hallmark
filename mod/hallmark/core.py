@@ -32,7 +32,7 @@ pd.DataFrame.__call__ = filter # monkey patch pandas DataFrame
 
 def Paraframe(fmt, *args, **kwargs):
     pattern = fmt
-    for i in range(10):
+    for i in range(len(fmt) // 3):
         #print(i, pattern, args, kwargs)
         try:
             pattern = pattern.format(*args, **kwargs)

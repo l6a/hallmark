@@ -55,5 +55,13 @@ def ParaFrame(fmt, *args, debug=False, **kwargs):
         else:
             print(f'No match; please check format string')
 
-    p = parse.compile(fmt)
-    return pd.DataFrame({'path':f, **p.parse(f).named} for f in files)
+    parser = parse.compile(fmt)
+
+    l = []
+    for f in files:
+        r = parser.parse(f)
+        if r is None:
+            print(f'Failed to parse "{f}"')
+        else:
+            l.append({'path':f, **r.named})
+    return pd.DataFrame(l)

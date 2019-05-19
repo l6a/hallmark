@@ -40,9 +40,9 @@ def ParaFrame(fmt, *args, debug=False, **kwargs):
             pattern = pattern.format(*args, **kwargs)
             break
         except KeyError as e:
-            match   = r'\{' + e.args[0] + ':?.*?\}'
-            pattern = re.sub(match, '{}', pattern, 1)
-            args    = *args, '*'
+            k = e.args[0]
+            pattern = re.sub(r'\{'+k+':?.*?\}', '{'+k+':s}', pattern)
+            kwargs[e.args[0]] = '*'
 
     files = sorted(glob(pattern))
     if debug:

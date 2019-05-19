@@ -30,7 +30,7 @@ def filter(self, **kwargs):
 
 pd.DataFrame.__call__ = filter # monkey patch pandas DataFrame
 
-def Paraframe(fmt, *args, **kwargs):
+def ParaFrame(fmt, *args, **kwargs):
     pattern = fmt
     for i in range(len(fmt) // 3):
         #print(i, pattern, args, kwargs)

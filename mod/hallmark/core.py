@@ -22,7 +22,10 @@ import pandas as pd
 def filter(self, **kwargs):
     mask = [False] * len(self)
     for k, v in kwargs.items():
-        mask |= self[k] == v
+        if isinstance(v, (tuple, list)):
+            mask |= self[k].isin(v)
+        else:
+            mask |= self[k] == v
     return self[mask]
 
 pd.DataFrame.__call__ = filter # monkey patch pandas DataFrame

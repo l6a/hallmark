@@ -30,10 +30,12 @@ def filter(self, **kwargs):
 
 pd.DataFrame.__call__ = filter # monkey patch pandas DataFrame
 
-def ParaFrame(fmt, *args, **kwargs):
+def ParaFrame(fmt, *args, debug=False, **kwargs):
     pattern = fmt
+
     for i in range(len(fmt) // 3):
-        #print(i, pattern, args, kwargs)
+        if debug:
+            print(i, pattern, args, kwargs)
         try:
             pattern = pattern.format(*args, **kwargs)
             break
@@ -41,10 +43,17 @@ def ParaFrame(fmt, *args, **kwargs):
             match   = r'\{' + e.args[0] + ':?.*?\}'
             pattern = re.sub(match, '{}', pattern, 1)
             args    = *args, '*'
-    #print(pattern)
 
     files = sorted(glob(pattern))
-    #print(len(files), files[0])
+    if debug:
+        print(f'Pattern: "{pattern}"')
+        n = len(files)
+        if n > 1:
+            print(f'{n} matches, e.g., "{files[0]}"')
+        elif n > 0:
+            print(f'{n} match, i.e., "{files[0]}"')
+        else:
+            print(f'No match; please check format string')
 
     p = parse.compile(fmt)
     return pd.DataFrame({'path':f, **p.parse(f).named} for f in files)

@@ -8,15 +8,34 @@ data products along the analyses.
 Versioning and managing these data products are essential in making
 modern data- and computation-intensive science reproducible.
 
-Motivated by the Event Horizon Telescope (EHT)'s data calibration
-pipelines, `hallmark` is a lightweight tool designed to version
-control and manage data products in a complex workflow.
+Motivated by the Event Horizon Telescope (EHT)'s observational data
+calibration pipelines and theory data analyses tools, `hallmark` is a
+lightweight tool designed to version control and manage data products
+in a complex workflow.
 It provides a simple abstraction and a uniform Application Programming
 Interface (API) on top of different backend technologies such as Git
 Large File Storage (LFS), Globus, iRODS, etc.
 By using `hallmark` with other tools such as `yukon` and `banyan` in
 Project Laniakea, researchers can utilize computing infrastructures in
 a global scale to accelerate their science.
+
+## `ParaFrame`
+
+When performing large scale parameter surveys and constructing
+simulation libraries, it is common to encode parameter values in the
+file paths.
+Example include `Ma+0.94_i70/sed_Rh160.h5`.
+`hallmark` provides a monkey-patched `pandas` `DataFrame`, called
+`ParaFrame`, to decode file paths back to proper parameters, and put
+the result into a `pandas` `DataFrame`.
+`ParaFrame` uses python `parse` to parse the file paths.
+Because `parse` is the opposite of `format`, this means format string
+used to generate the surveys and libraries in the first place can be
+reused.
+In addition, `ParaFrame` has a nice interface to perform filter, which
+makes parameter selection much easier than pure `pandas`.
+Examples of using `ParaFrame` can be found in the Jupyter Notebook
+`demos/ParaFrame.ipynb`.
 
 ## Usage
 

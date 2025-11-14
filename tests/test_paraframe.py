@@ -1,4 +1,3 @@
-
 from glob import glob
 import re
 import parse
@@ -8,26 +7,16 @@ import pytest
 from pathlib import Path
 import sys
 from io import StringIO
-
+from test_conftest import create_temp_data
 from hallmark import ParaFrame
-
-@pytest.fixture
-def create_temp_data(tmp_path):
-    data_dir = tmp_path / "data"
-    for a in range(10):
-        subdir = data_dir / f"a_{a}"
-        subdir.mkdir(parents=True)
-        for b in range(10, 20):
-            (subdir / f"b_{b}.txt").touch()
-    return data_dir
 
 @pytest.fixture
 def create_ParaFrame(create_temp_data):
     fmt = str(create_temp_data / "a_{a:d}/b_{b:d}.txt")
     return ParaFrame(fmt, debug = True)
 
-# def test_type_of_ParaFrame(create_ParaFrame):
-#     assert isinstance(create_ParaFrame, ParaFrame)
+def test_type_of_ParaFrame(create_ParaFrame):
+    assert isinstance(create_ParaFrame, pd.DataFrame)
 
 def test_shape_of_ParaFrame(create_ParaFrame):
     pf = create_ParaFrame

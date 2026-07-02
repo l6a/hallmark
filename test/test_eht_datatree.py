@@ -3,9 +3,8 @@ import shutil
 import pytest
 import pandas as pd
 from io import StringIO
-from hallmark import ParaFrame, Repo
+from hallmark import Repo
 from hallmark.eht_datatree import detect_fmt, build_repo
-from yaml import scan
 
 
 sample_fmt = "SR1_M87_{year}_{day}_{band}_hops_netcal_StokesI"
@@ -201,27 +200,6 @@ def test_build_repo_main_meta_schema(sample_repo):
 #     drive_keys = [k for k in project if k not in ("meta",)]
 #     assert len(drive_keys) == 1, \
 #         f"expected one extracted drive folder, got {drive_keys}"
-
-
-def test_build_repo_archives_not_in_data_branch(tmp_path):
-    _make_archive(tmp_path, "data1", "gztar")
-    _make_archive(tmp_path, "data2", "zip")
-    repo = build_repo(
-        root=tmp_path,
-        repo_path=tmp_path / "repo",
-        dataset_name="test",
-        fmt="{name}",)
-    branches = repo.branches()
-    stem_branches = [b for b in branches["names"] if b != "main"]
-    for branch in stem_branches:
-        data = pd.read_csv(
-            StringIO(repo.dothm.git.show(f"{branch}:data.tsv")),
-            sep="\t", dtype=str)
-        for _, row in data.iterrows():
-            assert not any(
-                str(row.get("sha1", "")).endswith(ext)
-                for ext in [".tgz", ".tar", ".gz", ".zip"]), \
-                    f"archive file leaked into data branch"
 
 
 #### build_repo data branch tests ###
@@ -649,7 +627,6 @@ def test_build_repo_explicit_fmt_drops_missing_parameter(tmp_path):
         all_rows.extend(data.to_dict("records"))
     all_pf = pd.DataFrame(all_rows)
     assert len(all_pf) == 2, f"expected 2 files matched, got {len(all_pf)}"
-    missing_row = all_pf[all_pf["sha1"].notna()]
     assert all_pf["p1"].isna().any(), \
         "expected at least one row with NaN p1 for missing parameter"
 

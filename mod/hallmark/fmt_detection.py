@@ -1,7 +1,6 @@
 import re
 from pathlib import Path
 from itertools import combinations
-import parse as _parse
 
 # common meta extensions to look for when building the fmts
 META_EXTENSIONS = [".py", ".sh", ".md", ".pdf", ".rst", ".cfg", ".ini", ".yml", ".yaml"\

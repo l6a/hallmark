@@ -28,14 +28,14 @@ def test_scan_inventory_ignores_dot_hm(tmp_path):
     assert result == ["visible.csv"], f"expected only visible.csv, got {result}"
 
 
-### _stems_to_fmts: global-merge-first behavior ###
+### _stems_to_fmts ###
 
 def test_stems_to_fmts_merges_when_one_position_is_globally_fixed(tmp_path):
     stems = ["sgra_20170406_nustar", "sgra_20170411_nustar",
              "sgra_20170406_chandra", "sgra_20170407_chandra"]
     fmts = _stems_to_fmts(stems)
     assert fmts == ["sgra_{p0}_{p1}"], \
-        f"expected single merged fmt via shared 'sgra' token, got {fmts}"
+        f"expected one merged fmt via shared 'sgra' token, got {fmts}"
 
 
 def test_stems_to_fmts_falls_back_to_anchor_clustering_for_unrelated_stems(tmp_path):

@@ -1,6 +1,7 @@
 import re
 from pathlib import Path
 from itertools import combinations
+import parse as _parse
 
 # common meta extensions to look for when building the fmts
 META_EXTENSIONS = [".py", ".sh", ".md", ".pdf", ".rst", ".cfg", ".ini", ".yml", ".yaml"\
@@ -15,6 +16,53 @@ _DELIM_PATTERN = r"[_\-.]"
 # convert the extensions to lowercase and remove the leading dot for easier comparison
 DRIVE_EXTS_LOWER = {ext.lstrip(".").lower() for ext in DRIVE_EXTENSIONS}
 META_EXTS_LOWER = {ext.lstrip(".").lower() for ext in META_EXTENSIONS}
+
+_PARAM_PATTERNS: dict[str, str] = {
+    "experiment": r"e\d{2}[a-z]\d{2}",   # e.g. e17a10, e17d05
+    "band":       r"^(hi|lo)$",           # hi or lo
+    "pass":       r"^\d$",                # single digit, e.g. 7
+    "scan":       r"^\d{3}$",             # three-digit day, e.g. 097
+    "doy":        r"^\d{3}$",             # alias for scan
+}
+
+# Known-value lookup — EHT domain knowledge
+_KNOWN_PARAM_VALUES: dict[str, set[str]] = {
+    "band":     {"hi", "lo"},
+    "pipeline": {"hops", "casa", "smili", "difmap"},
+    "stage":    {"4fit", "dxin", "fits", "haxp", "hops",
+                 "pcin", "pcqk", "swin"},
+    "source":   {"M87", "SgrA", "3C279", "OJ287", "1055-018",
+                 "1055+018", "3C273", "SGRA", "sgra"},
+    "stokes":   {"I", "Q", "U", "V", "StokesI"},
+    "method":   {"besttime", "norm", "scan"},
+}
+
+def _infer_param(observed: set[str], used_names: set[str], 
+                        fallback: str) -> str:
+    """
+    Infer a parameter name from a set of observed values.
+
+    Args:
+        observed: Set of observed values for a parameter.
+        used_names: Set of parameter names that have been used by other parameters
+        fallback: Fallback parameter name to use if no match is found.
+
+    Returns:
+        Inferred parameter name, or the fallback if no match is found.
+    """
+    # pattern matching
+    for name, pattern in _PARAM_PATTERNS.items():
+        if name in used_names:
+            continue
+        if all(re.fullmatch(pattern, v) for v in observed):
+            return name
+    # known value lookup
+    for name, known in _KNOWN_PARAM_VALUES.items():
+        if name in used_names:
+            continue
+        if observed.issubset(known):
+            return name
+    return fallback
 
 def _stems_to_fmts(stems: list[str]) -> list[str]:
     """Cluster same-token-count stems into one fmt per shared literal pattern.
@@ -76,6 +124,7 @@ def _stems_to_fmts(stems: list[str]) -> list[str]:
         # build the fmt directly from the cluster
         cluster_tokenized = [tokenized[stem] for stem in cluster]
         fmt_tokens = []
+        used_names = set()
         field_count = 0
         has_fixed = False
         for index, token in enumerate(cluster_tokenized[0]):
@@ -84,9 +133,15 @@ def _stems_to_fmts(stems: list[str]) -> list[str]:
             if len(set(values)) == 1:
                 fmt_tokens.append(token)
                 has_fixed = True
+            # if the token is different for any, its a parameter
             else:
-                # if the token is different for any, its a parameter
-                fmt_tokens.append(f"{{p{field_count}}}")
+                observed = set(values)
+                # try to infer a parameter name from the observed values
+                inferred_name = _infer_param(
+                    observed, used_names, fallback=f"p{field_count}"
+                )
+                fmt_tokens.append(f"{{{inferred_name}}}")
+                used_names.add(inferred_name)
                 field_count += 1
 
         # concatenate the fmt from the tokens and delimiters
@@ -132,7 +187,7 @@ def _align(longer_tokens: list[str], shorter_tokens: list[str]):
         for k, (ct, st) in enumerate(zip(candidate, shorter_tokens)):
             longer_idx = kept_indices[k]
             # if either token is a parameter, mark this position for parameterization
-            if re.fullmatch(r"\{p\d+\}", ct) or re.fullmatch(r"\{p\d+\}", st):
+            if re.fullmatch(r"\{.*?\}", ct) or re.fullmatch(r"\{.*?\}", st):
                 diff_positions.add(longer_idx)
                 continue
             # if the tokens are different, mark this position for parameterization
@@ -177,7 +232,7 @@ def combine_alike_fmts(fmts: list[str]) -> list[str]:
     # tokenize every fmt once
     tokens_cache = {idx: re.split(_DELIM_PATTERN, f) for idx, f in enumerate(fmts)}
     literal_tokens_cache = {
-        idx: {t for t in tokens if not re.fullmatch(r"\{p\d+\}", t)}
+        idx: {t for t in tokens if not re.fullmatch(r"\{.*?\}", t)}
         for idx, tokens in tokens_cache.items()}
 
     # for each fmt, find all other fmts that share at least one literal token
@@ -231,11 +286,25 @@ def combine_alike_fmts(fmts: list[str]) -> list[str]:
 
         new_tokens = []
         param_count = 0
+        # collect the names of any parameters to avoid duplicates
+        used_names = {re.sub(r"[\{\}]", "", t) for t in frame_tokens 
+                        if re.fullmatch(r"\{.*?\}", t)}
         for idx, token in enumerate(frame_tokens):
             # if this position differs across the group, make it a parameter
             if idx in all_diff_positions:
-                new_tokens.append(f"{{p{param_count}}}")
-                param_count += 1
+                # if already a parameter, keep it as-is
+                if re.fullmatch(r"\{.*?\}", token):
+                    new_tokens.append(token)
+                else:
+                    # new parameter position
+                    fallback = f"p{param_count}"
+                    # avoid duplicate parameter names by incrementing the fallback name
+                    while fallback in used_names:
+                        param_count += 1
+                        fallback = f"p{param_count}"
+                    new_tokens.append(f"{{{fallback}}}")
+                    used_names.add(fallback)
+                    param_count += 1  
             else:
                 new_tokens.append(token)
         delims = re.findall(_DELIM_PATTERN, fmts[frame_idx])
@@ -373,6 +442,6 @@ def detect_fmt(root: Path) -> list[str]:
 
     fmts = combine_alike_fmts(group_fmts)
     # only keep fmts that have at least 1 parameter        
-    fmts = [f for f in fmts if re.search(r"\{p\d+\}", f)]   
+    fmts = [f for f in fmts if re.search(r"\{.*?\}", f)]
 
     return anchor_fmts + fmts

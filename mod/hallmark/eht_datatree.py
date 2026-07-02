@@ -2,7 +2,7 @@ from __future__ import annotations
 from pathlib import Path
 import shutil
 from hallmark import ParaFrame
-from .fmt_detection import detect_fmt, KNOWN_META_FILES, _DELIM_PATTERN,\
+from .fmt_detection import detect_fmt, scan_inventory,KNOWN_META_FILES, _DELIM_PATTERN,\
                                  DRIVE_EXTS_LOWER, META_EXTS_LOWER
 import parse
 import re
@@ -90,27 +90,46 @@ def _extract_drive(drive_path: Path) -> Path:
             shutil.unpack_archive(str(drive_path), str(extract_dir))
     return extract_dir
 
-# private function used by build_tree to create nested data branch
-def _build_data_branches(root: Path, fmt: str | list[str] | None,
-                          parser_cache: dict, tracked: set[str],
-                          all_paths: list[Path]) -> dict:
+
+def build_repo(root: Path, repo_path: Path, dataset_name: str, fmt: str | list[str] | 
+               None = None, data_type: str = "L2", overwrite: bool = False,) -> "Repo":
     """
-    Build the fmt/stem data structure for files matching the given fmt(s).
+    Build a hallmark repository directly from a dataset directory.
+
+    Walks the dataset once via scan_inventory, classifies each file as
+    meta/drive/data, buffers data rows by (fmt_str, stem_key), then
+    commits one branch per stem to the hallmark repo.
 
     Args:
-        root:    Path to search for matching files.
-        fmt:     Format string or list of format strings for parsing data files.
-        parser_cache: Cache of compiled parsers for the format strings.
-        tracked: Set of relative file paths already accounted for.
-        all_paths: List of all file paths to consider.
+        root:         Path to the EHT dataset root directory.
+        repo_path:    Path where the hallmark repo will be created.
+        dataset_name: Human-readable name for this dataset.
+        fmt:          Format string(s) for parsing data files.
+                      If None, auto-detected via detect_fmt.
+        data_type:    "L2" only for now; L1 support deferred.
+        overwrite:    If True, delete and recreate an existing repo.
 
     Returns:
-        Dict of {fmt_str: {stem_key: ParaFrame, ..., "all": ParaFrame}}.
+        The initialized Repo object, sitting on the main branch.
     """
-    ### FMT STEMS OUTER DICT ###
+    # intitalize the root for file scanning and check if it exists
+    root = Path(root).expanduser().resolve()
+    if not root.is_dir():
+        raise FileNotFoundError(f"{root} is not a directory")
+
+    # intialize the repo path and check if it already exists
+    repo_path = Path(repo_path).expanduser().resolve()
+    if repo_path.exists():
+        if overwrite:
+            # remove the existing repo directory and its contents if overwrite is True
+            shutil.rmtree(repo_path)
+        else:
+            raise FileExistsError(f'Repo already exists at "{repo_path}".')
+    repo = Repo.init(repo_path)
 
     # detect the fmt(s) if not provided, and compile parsers for them
     fmts = detect_fmt(root) if fmt is None else ([fmt] if isinstance(fmt, str) else fmt)
+    parser_cache = {}
     parsers = _compile_parsers(fmts, parser_cache)
     # group the parsers by their token count for efficient matching
     parsers_by_tc: dict[int, list] = {}
@@ -119,33 +138,43 @@ def _build_data_branches(root: Path, fmt: str | list[str] | None,
         parsers_by_tc.setdefault(variant_token_count, []).append((fmt_str, parser))
         parsers_by_fmt.setdefault(fmt_str, []).append(parser)
 
-    # dict of the different fmt stems initialization
-    fmt_stems = {}
-    unmatched_files = []
-    # search all subdirectories from root
-    for file in all_paths:
-        # if the file isn't a dir or a drive
-        relative_path = str(file.relative_to(root))
-        if relative_path in tracked:
-            continue
-        # reset parse and fmt for each file
-        parsed = None
-        matched_fmt = None
+    # initialize the tree meta branch and data stems
+    stems: dict[tuple[str, str], list[dict]] = {}
+    meta_files: list[str] = []
+    unmatched: list[str] = []
 
-        stem_only = re.sub(r"[\-.]", "_", file.stem)
-        stem_with_ext = stem_only + re.sub(r"[\-.]", "_", file.suffix)
+    # match files to correct branch and stem, or add to meta if not a data file
+    for file_path in scan_inventory(root):
+        path = Path(file_path)
+        ext = path.suffix.lstrip(".").lower()
+        stem_name = path.stem.split(".")[0]
+
+        # don't need to track drives
+        if ext in DRIVE_EXTS_LOWER:
+            continue
+
+        # common meta file formats
+        if ext in META_EXTS_LOWER or stem_name in KNOWN_META_FILES:
+            meta_files.append(file_path)
+            continue
+
+        stem_only = re.sub(r"[\-.]", "_", path.stem)
+        stem_with_ext = stem_only + re.sub(r"[\-.]", "_", path.suffix)
         # counts to see if ext was included in fmt
         stem_only_token_count = len(stem_only.split("_"))
         stem_with_ext_token_count = len(stem_with_ext.split("_")) 
 
+        # reset flags for each file
+        parsed = None
+        matched_fmt = None
         # parse the file name to extract fields, skip if it doesn't match the format
         matched = False
         # iterate over each candidate and its token count
-        for candidate, candidate_tc in (
+        for candidate, candidate_token_count in (
         (stem_only, stem_only_token_count),
         (stem_with_ext, stem_with_ext_token_count),):
             # iterate over each parser that matches this candidate's token count
-            for fmt_str, parser in parsers_by_tc.get(candidate_tc, []):
+            for fmt_str, parser in parsers_by_tc.get(candidate_token_count, []):
                 parsed = parser.parse(candidate)
                 if parsed:
                     matched_fmt = fmt_str
@@ -156,287 +185,123 @@ def _build_data_branches(root: Path, fmt: str | list[str] | None,
                 break
 
         if parsed:
-            # get path to file from data root
-            relative_path = str(file.relative_to(root))
             # create unique stem name based on fmt parameters excluding extension
             stem_key = "_".join(str(value) for key, value in parsed.named.items() 
                                 if key != "ext")
+            # check the string isn't empty
             if not stem_key:
-                stem_key = "None"
+                continue
             # create a row for this file to add to relevant Paraframe
             row = {
-                "path": relative_path,
+                "path": file_path,
                 # normalize ext to not have period
-                "ext": Path(relative_path).suffix.lstrip("."),
+                "ext": Path(file_path).suffix.lstrip("."),
                 # one column for each different parsed field
                 **{key: value for key, value in parsed.named.items() if key != "ext"},}
             # add row to dict, and create the dict if it doesn't exist yet
-            fmt_stems.setdefault(matched_fmt, {}).setdefault(stem_key, []).append(row)
-            tracked.add(relative_path)
+            stems.setdefault((matched_fmt, stem_key), []).append(row)
         else:
-            extension = file.suffix.lstrip(".").lower()
-            if extension not in DRIVE_EXTS_LOWER and extension not in META_EXTS_LOWER \
-            and file.stem.split(".")[0] not in KNOWN_META_FILES:
-                unmatched_files.append(file)
+            # failed to match the file to any fmt stem
+            unmatched.append(file_path)
 
     # double check unmatched files to see if they match any fmt stems by literal tokens
-    for file in unmatched_files:
-        stem_tokens = set(re.split(_DELIM_PATTERN, file.stem))
-        stem_only = re.sub(r"[\-.]", "_", file.stem)
-        for fmt_str in list(fmt_stems.keys()):
-            fmt_literals = {t for t in re.split(_DELIM_PATTERN, fmt_str)
-                            if not re.fullmatch(r"\{p\d+\}", t)}
-            # if there are no stem tokens in the fmt, this fmt isn't a candidate
+    for file_path in unmatched:
+        path = Path(file_path)
+        stem_tokens = set(re.split(_DELIM_PATTERN, path.stem))
+        stem_only = re.sub(r"[\-.]", "_", path.stem)
+        for fmt_str in parsers_by_fmt:
+            # tokens that are not parameters in the fmt string
+            fmt_literals = {
+                t for t in re.split(_DELIM_PATTERN, fmt_str)
+                if not re.fullmatch(r"\{.*?\}", t)
+            }
+            # if there are no alike tokens they aren't a match
             if not (stem_tokens & fmt_literals):
                 continue
-
-            # reset the parsed variable for each fmt
             parsed = None
-            # iterate over each parser for this fmt to see if it can parse the stem
-            for parser in parsers_by_fmt.get(fmt_str, []):
+            # see what parser is for this fmt_str
+            for parser in parsers_by_fmt[fmt_str]:
                 parsed = parser.parse(stem_only)
                 if parsed:
                     break
-
-            relative_path = str(file.relative_to(root))
-            # if the file matches the fmt, create a row for it and add it to the dict
             if parsed:
                 stem_key = "_".join(str(v) for k, v
                                     in parsed.named.items() if k != "ext")
+                # check the string isn't empty
                 if not stem_key:
                     continue
                 row = {
-                    "path": relative_path,
-                    "ext": file.suffix.lstrip("."),
+                    "path": file_path,
+                    "ext": path.suffix.lstrip("."),
                     **{k: v for k, v in parsed.named.items() if k != "ext"},}
             else:
-                param_names = re.findall(r"\{(p\d+)\}", fmt_str)
-                row = {
-                    "path": relative_path,
-                    "ext": file.suffix.lstrip("."),
-                    **{name: None for name in param_names},}
+                param_names = re.findall(r"\{(\w+)\}", fmt_str)
                 # create a stem key with None for each parameter since it didn't match
                 stem_key = "_".join(str(None) for _ in param_names)
+                # double check the string isn't empty, if it is skip this file
                 if not stem_key:
                     continue
-
-            fmt_stems[fmt_str].setdefault(stem_key, []).append(row)
-            tracked.add(relative_path)
+                row = {
+                    "path": file_path,
+                    "ext": path.suffix.lstrip("."),
+                    **{name: None for name in param_names},}
+             
+            stems.setdefault((fmt_str, stem_key), []).append(row)
             break
-
-    ### FMT STEMS INNER DICTS ###
-    # data structure initialization
-    data_branches = {}
-    # for every fmt and its stem dict
-    for fmt_str, stems in fmt_stems.items():
-        fmt_dict = {}
-        # loop thru every stem for this fmt
-        for stem_key, rows in stems.items():
-            # create a Paraframe for each different stem
-            stem_pf = ParaFrame(rows, base_path=root)
-            # stem Paraframes are nested inside the fmt dict
-            fmt_dict[stem_key] = stem_pf
-        # each fmt broken into different data branches
-        data_branches[fmt_str] = fmt_dict
-
-    return data_branches
-
-
-def build_tree(root: Path, fmt: str | list[str] | None = None, data_type: str = "L2",
-                _parser_cache: dict | None = None) -> dict:
-    """
-    Build an in-memory pytree for an EHT dataset directory.
-
-    Args:
-        root: Path to the EHT dataset root directory.
-        fmt: Format string for parsing data files.
-        data_type: Type of data to build ("L1" or "L2")
-        _parser_cache: Cache of compiled parsers for the format strings
-
-    Returns:
-        A dictionary with keys:
-        - "meta"   : ParaFrame of housekeeping files
-        - "drives" : ParaFrame of compressed archives
-        - "data"   : dict of {stem -> ParaFrame}
-    """
-    # create clean root path
-    root = Path(root).expanduser().resolve()
-    if not root.is_dir():
-        raise FileNotFoundError(f"{root} is not a directory")
-    # track files that are included in the tree to avoid double counting
-    tracked = set()
-
-    # compile parsers for the given fmt(s) if not already provided
-    if _parser_cache is None:
-        _parser_cache = {}
-
-    # L1 data makes recursive calls for each directory, so use glob instead of rglob
-    glob_fn = root.glob if data_type == "L1" else root.rglob
-    all_paths = [p for p in glob_fn("*") if p.is_file()]
-
-    ### DRIVES ###
-    # collect all drive paths matching any supported extension
-    extracted_dir_names = set()
-    # add any file that has this ext to the drive paths list and tracked set
-    for path in all_paths:
-        if path.suffix.lstrip(".").lower() not in DRIVE_EXTS_LOWER:
-            continue
-        extract_dir = _extract_drive(path)
-        # only L1 data needs to track the extracted directory names for recursion
-        if data_type == "L1":
-           extracted_dir_names.add(extract_dir.name)
-        tracked.add(str(path.relative_to(root)))
-
-    ### DATA ###
-    data_branches = _build_data_branches(root, fmt, _parser_cache, tracked, all_paths) \
-                    if data_type == "L2" else {}
-
-    ### META ###
-    # create a list of all files under root that aren't tracked
-    meta_files = {
-        str(file.relative_to(root))
-        for file in all_paths
-        # add inventory item if its not a dir, not the .hm, and not in tracked
-        if ".hm" not in file.parts
-           and str(file.relative_to(root)) not in tracked
-    }
-    # create a paraframe for the meta files with extensions column
-    meta_pf = ParaFrame(
-    [{"path": file, "ext": Path(file).suffix.lstrip(".")} 
-     for file in sorted(meta_files)],
-    base_path=root,)
-    for _, row in meta_pf.iterrows():
-        tracked.add(row["path"])
-
-    # double check for repeated file names in the meta ParaFrame to make a new fmt
-    if data_type == "L2" and not meta_pf.empty:
-        name_counts = meta_pf["path"].apply(lambda p: Path(p).name).value_counts()
-        # find the names that are repeated in the meta ParaFrame
-        repeated_names = set(name_counts[name_counts > 1].index)
-        # filter out known meta files and extensions from the repeated names
-        repeated_names = {name for name in repeated_names
-                          if Path(name).stem.split(".")[0] not in KNOWN_META_FILES
-                       and Path(name).suffix.lstrip(".").lower() not in META_EXTS_LOWER
-                       and name != ".DS_Store"}
-
-        if repeated_names:
-            # find the rows in the meta ParaFrame that have repeated names
-            is_repeated = meta_pf["path"].apply(lambda p: 
-                                                Path(p).name in repeated_names)
-            repeated_rows = meta_pf[is_repeated]
-            # remove the repeated rows from the meta ParaFrame to avoid double counting
-            meta_pf = meta_pf[~is_repeated]
-
-            for filename in repeated_names:
-                fmt_key = Path(filename).stem
-                # find the rows in the repeated rows that match this filename
-                rows = repeated_rows[repeated_rows["path"]
-                                 .apply(lambda p: Path(p).name) == filename]
-                # create a ParaFrame for the repeated rows and add it to data_branches
-                data_branches.setdefault(fmt_key, {})[fmt_key] = ParaFrame(
-                                 rows.to_dict("records"), base_path=root)
-        
-    # create dict with three keys, only data has subbranches
-    tree = {}
-    if not meta_pf.empty:
-        tree["meta"] = meta_pf
-    if data_branches:
-        tree["data"] = data_branches
- 
-    # recursive L1 tree construction
-    if data_type == "L1":
-        # call build_tree for each subdirectory
-        for subdir in sorted(p for p in root.iterdir() if p.is_dir()):
-            # calls with drives will end recursion
-            next_level = "L2" if subdir.name in extracted_dir_names else "L1"
-            # append each subdirectory to the tree
-            tree[subdir.name] = build_tree(subdir, fmt, data_type=next_level,
-                                            _parser_cache=_parser_cache)
- 
-    return tree
-
-
-def build_repo(tree: dict, repo_path: Path, dataset_name: str,
-               worktree_root: Path, overwrite: bool = False,
-               parser_cache: dict | None = None) -> "Repo":
-    """
-    Build a hallmark repository from a build_tree output.
-
-    Args:
-        tree: Build tree dictionary from build_tree function.
-        repo_path: Path to create the hallmark repository.
-        dataset_name: Name of the dataset for the repository.
-        worktree_root: Path to the root of the worktree containing the data files.
-        overwrite: If True, overwrite existing repository at repo_path.
-        parser_cache: Optional cache of compiled parsers for the format strings.
-
-        Returns:
-            A Repo object representing the created hallmark repository.
-    """
-
-    repo_path = Path(repo_path).expanduser().resolve()
-    if repo_path.exists():
-        if overwrite:
-            # remove the existing repo directory and its contents if overwrite is True
-            shutil.rmtree(repo_path)
-        else:
-            raise FileExistsError(f'Repo already exists at "{repo_path}".')
-
-    repo = Repo.init(repo_path)
-    worktree_root = Path(worktree_root).expanduser().resolve()
-
+        # after rescue pass loop, add any remaining unmatched files to meta_files
+        remaining_unmatched = [file for file in unmatched 
+                                if not any(file == row["path"] 
+                                for rows in stems.values() 
+                                for row in rows)]
+        meta_files.extend(remaining_unmatched)
+    
     # root meta.yaml creation and commit
-    meta_dict = {"dataset": dataset_name}
+    meta_dict: dict = {"dataset": dataset_name}
     # find all meta files in the tree and add them to the meta_dict
-    if "meta" in tree and not tree["meta"].empty:
-        meta_dict["files"] = tree["meta"]["path"].tolist()
+    if meta_files:
+        meta_dict["files"] = meta_files
     repo.dothm.dump_yml(meta_dict, "meta")
     repo.dothm.index.add(["meta.yml"])
     repo.dothm.index.commit(f"Initialize dataset: {dataset_name}")
 
-    # one branch per fmt, one sub-branch per stem
-    for fmt_str, fmt_dict in tree.get("data", {}).items():
-        for stem_key, stem_pf in fmt_dict.items():
-            # skip the "all" stem and any non-ParaFrame stems
-            if not isinstance(stem_pf, ParaFrame):
-                continue
-            # skip empty ParaFrames
-            if stem_pf.empty:
-                continue
+    # one branch per stem
+    for (fmt_str, stem_key), rows in stems.items():
+        stem_pf = ParaFrame(rows, base_path=root)
+        # skip empty ParaFrames
+        if stem_pf.empty:
+            continue
 
-            branch_name = _sanitize_branch_name(f"{fmt_str}/{stem_key}")
-            # check if the branch already exists, and create it if not
-            existing = {h.name for h in repo.dothm.heads}
-            if branch_name in existing:
-                repo.dothm.git.checkout(branch_name)
-            else:
-                repo.dothm.git.checkout("-b", branch_name)
-            repo.state = repo.dothm.load()
+        branch_name = _sanitize_branch_name(f"{fmt_str}/{stem_key}")
+        # check if the branch already exists, and create it if not
+        existing = {h.name for h in repo.dothm.heads}
+        if branch_name in existing:
+            repo.dothm.git.checkout(branch_name)
+        else:
+            repo.dothm.git.checkout("-b", branch_name)
+        repo.state = repo.dothm.load()
 
-            repo.set_config(fmt=fmt_str)
-            # add sha1 to stem ParaFrame
-            stem_pf = stem_pf.copy()
-            stem_pf["sha1"] = [
-                Repo.checksum(worktree_root / path)
-                for path in stem_pf["path"]]
+        repo.set_config(fmt=fmt_str)
+        # add sha1 to stem ParaFrame
+        stem_pf = stem_pf.copy()
+        stem_pf["sha1"] = [Repo.checksum(root / path)
+                            for path in stem_pf["path"]]
 
             # convert the ParaFrame to a manifest
-            try:
-                # compile parsers for the fmt and its variants with missing parameters
-                manifest = manifest_frame_from_pf(stem_pf, fmt_str)
-                repo.state.replace(manifest)
-                repo.dothm.dump(repo.state)
+        try:
+            # compile parsers for the fmt and its variants with missing parameters
+            manifest = manifest_frame_from_pf(stem_pf, fmt_str)
+            repo.state.replace(manifest)
+            repo.dothm.dump(repo.state)
 
-                # store objects
-                for _, row in repo.state.data.iterrows():
-                    match = stem_pf[stem_pf["sha1"] == row["sha1"]]
-                    if not match.empty:
-                        # store the file in the repo objects using its sha1
-                        repo.objects.store(
-                            worktree_root / match.iloc[0]["path"],
-                            row["sha1"])
+            # store objects
+            for _, row in repo.state.data.iterrows():
+                match = stem_pf[stem_pf["sha1"] == row["sha1"]]
+                if not match.empty:
+                    # store the file in the repo objects using its sha1
+                    repo.objects.store(root / match.iloc[0]["path"],
+                                        row["sha1"])
 
-            except Exception as e:
+        except Exception as e:
                 # manifest build failed — write file list to meta.yml instead
                 repo.dothm.dump_yml({
                     "error": str(e),
@@ -445,7 +310,7 @@ def build_repo(tree: dict, repo_path: Path, dataset_name: str,
                 }, "meta")
                 repo.dothm.index.add(["meta.yml"])
 
-            repo.dothm.index.commit(
+        repo.dothm.index.commit(
                 f"Add stem: {stem_key}\nFmt: {fmt_str}\nDataset: {dataset_name}")
 
     # return to main

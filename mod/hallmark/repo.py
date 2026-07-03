@@ -37,8 +37,6 @@ from .worktree import Worktree
 # add near the top imports
 from concurrent.futures import ThreadPoolExecutor
 import hashlib
-from concurrent.futures import ThreadPoolExecutor
-
 
 @contextmanager
 def chdir(path):

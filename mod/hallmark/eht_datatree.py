@@ -9,6 +9,7 @@ import re
 from itertools import combinations
 from .repo import Repo
 from .repo_manifest import manifest_frame_from_pf
+from concurrent.futures import ThreadPoolExecutor
 
 ## Mapping of file extensions to archive formats for shutil.unpack_archive
 _ARCHIVE_FORMAT_BY_EXT = {
@@ -17,25 +18,42 @@ _ARCHIVE_FORMAT_BY_EXT = {
 }
 
 def _sanitize_branch_name(name: str) -> str:
-    """Replace characters git disallows in ref names."""
-    for ch in ["{", "}", " ", "~", "^", ":", "?", "*", "[", "\\"]:
-        name = name.replace(ch, "_")
+    """
+    Replace characters git disallows in ref names.
+    
+    Args:
+        name: The original branch name to sanitize.
+
+    Returns:
+        A sanitized branch name with disallowed characters replaced by underscores.
+    """
+    for char in ["{", "}", " ", "~", "^", ":", "?", "*", "[", "\\"]:
+        name = name.replace(char, "_")
     name = name.replace("..", "__")
     return name.strip("/")
 
 def _compile_parsers(fmts: list[str], cache: dict) -> \
                         list[tuple[str, int, "parse.Parser"]]:
-    """Compile every fmt and its trailing-dropped-parameter variants,
+    """
+    Compile every fmt and its trailing-dropped-parameter variants,
     reusing already-compiled parsers from `cache` when the exact same
-    fmt string has been seen before."""
+    fmt string has been seen before.
+
+    Args:
+        fmts: A list of format strings to compile.
+        cache: A dictionary to store and reuse compiled parsers.
+
+    Returns:
+        A list of tuples containing the original format string, the number
+        of parameters, and the compiled parser.
+    """
     parsers = []
-    # normalize the deliminators for parsing
     for f in fmts:
         if f in cache:
             # reuse the parser from cache if this fmt has already been compiled
             parsers.extend(cache[f])
             continue
-        # normalize the deliminators for parsing
+        # normalize the delimiters for parsing
         stem = re.sub(r"[\-.]", "_", f)
         tokens = stem.split("_")
         # find the indices of the tokens that are parameters
@@ -46,16 +64,12 @@ def _compile_parsers(fmts: list[str], cache: dict) -> \
         # try dropping 0 to all parameters to create different fmt variants
         for drop_count in range(len(param_indices) + 1):
             # find the positions of the parameters to drop for this variant
-            for drop_count in range(len(param_indices) + 1):
-                for positions_to_drop in combinations(param_indices, drop_count):
-                    positions_to_drop = set(positions_to_drop)
-                    kept = [t for i, t in enumerate(tokens) 
-                            if i not in positions_to_drop]
-                    variants.add("_".join(kept))
-            # create a new fmt variant with the selected parameters dropped
-            kept = [t for i, t in enumerate(tokens) if i not in positions_to_drop]
-            variants.add("_".join(kept))
-
+            for positions_to_drop in combinations(param_indices, drop_count):
+                positions_to_drop = set(positions_to_drop)
+                # create a new fmt variant with the selected parameters dropped
+                kept = [t for i, t in enumerate(tokens) 
+                        if i not in positions_to_drop]
+                variants.add("_".join(kept))                
         # compile a parser for each variant and store it in the cache
         f_parsers = [
             (f, len(v.split("_")), parse.compile(v, case_sensitive=True))
@@ -66,6 +80,16 @@ def _compile_parsers(fmts: list[str], cache: dict) -> \
     return parsers
 
 def _extract_drive(drive_path: Path) -> Path:
+    """
+    Extracts a drive archive to a directory with the same name as the drive
+    (minus the extension) in the same parent directory.
+
+    Args:
+        drive_path: Path to the drive archive file.
+
+    Returns:
+        Path to the directory where the drive was extracted.
+    """
     # remove extension from drive name to create the extraction directory
     name = drive_path.name
     # remove extra drive extensions
@@ -80,10 +104,10 @@ def _extract_drive(drive_path: Path) -> Path:
     # check that the drive has not already been extracted
     if not extract_dir.exists():
         archive_format = _ARCHIVE_FORMAT_BY_EXT.get(drive_path.suffix.lower())
+        # avoid errors with shutil in Python 3.14+ 
         kwargs = {"filter": "data"} if archive_format in \
                     ("tar", "gztar", "bztar", "xztar") else {}
         if archive_format:
-            # avoid errors with shutil in Python 3.14+ 
             shutil.unpack_archive(str(drive_path), str(extract_dir),
                                    format=archive_format, **kwargs)
         else:
@@ -92,7 +116,8 @@ def _extract_drive(drive_path: Path) -> Path:
 
 
 def build_repo(root: Path, repo_path: Path, dataset_name: str, fmt: str | list[str] | 
-               None = None, data_type: str = "L2", overwrite: bool = False,) -> "Repo":
+               None = None, data_type: str = "L2", overwrite: bool = False,
+               max_workers: int = 8) -> "Repo":
     """
     Build a hallmark repository directly from a dataset directory.
 
@@ -108,7 +133,7 @@ def build_repo(root: Path, repo_path: Path, dataset_name: str, fmt: str | list[s
                       If None, auto-detected via detect_fmt.
         data_type:    "L2" only for now; L1 support deferred.
         overwrite:    If True, delete and recreate an existing repo.
-
+        max_workers:  Maximum number of worker threads for concurrent operations.
     Returns:
         The initialized Repo object, sitting on the main branch.
     """
@@ -134,6 +159,7 @@ def build_repo(root: Path, repo_path: Path, dataset_name: str, fmt: str | list[s
     # group the parsers by their token count for efficient matching
     parsers_by_tc: dict[int, list] = {}
     parsers_by_fmt: dict[str, list] = {}
+    # populate the dictionaries with the compiled parsers
     for fmt_str, variant_token_count, parser in parsers:
         parsers_by_tc.setdefault(variant_token_count, []).append((fmt_str, parser))
         parsers_by_fmt.setdefault(fmt_str, []).append(parser)
@@ -253,7 +279,11 @@ def build_repo(root: Path, repo_path: Path, dataset_name: str, fmt: str | list[s
                                 if not any(file == row["path"] 
                                 for rows in stems.values() 
                                 for row in rows)]
-        meta_files.extend(remaining_unmatched)
+    
+    # add any remaining unmatched files to meta_files
+    matched_paths = {row["path"] for rows in stems.values() for row in rows}
+    remaining_unmatched = [f for f in unmatched if f not in matched_paths]
+    meta_files.extend(remaining_unmatched)
     
     # root meta.yaml creation and commit
     meta_dict: dict = {"dataset": dataset_name}
@@ -263,55 +293,58 @@ def build_repo(root: Path, repo_path: Path, dataset_name: str, fmt: str | list[s
     repo.dothm.dump_yml(meta_dict, "meta")
     repo.dothm.index.add(["meta.yml"])
     repo.dothm.index.commit(f"Initialize dataset: {dataset_name}")
+    repo.state.meta = {}
 
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
     # one branch per stem
-    for (fmt_str, stem_key), rows in stems.items():
-        stem_pf = ParaFrame(rows, base_path=root)
-        # skip empty ParaFrames
-        if stem_pf.empty:
-            continue
+        for (fmt_str, stem_key), rows in stems.items():
+            stem_pf = ParaFrame(rows, base_path=root)
+            # skip empty ParaFrames
+            if stem_pf.empty:
+                continue
 
-        branch_name = _sanitize_branch_name(f"{fmt_str}/{stem_key}")
-        # check if the branch already exists, and create it if not
-        existing = {h.name for h in repo.dothm.heads}
-        if branch_name in existing:
-            repo.dothm.git.checkout(branch_name)
-        else:
-            repo.dothm.git.checkout("-b", branch_name)
-        repo.state = repo.dothm.load()
+            branch_name = _sanitize_branch_name(f"{fmt_str}/{stem_key}")
+            # check if the branch already exists, and create it if not
+            existing = {h.name for h in repo.dothm.heads}
+            if branch_name in existing:
+                repo.dothm.git.checkout(branch_name)
+            else:
+                repo.dothm.git.checkout("-b", branch_name)
+            repo.state = repo.dothm.load()
 
-        repo.set_config(fmt=fmt_str)
-        # add sha1 to stem ParaFrame
-        stem_pf = stem_pf.copy()
-        stem_pf["sha1"] = [Repo.checksum(root / path)
-                            for path in stem_pf["path"]]
+            repo.set_config(fmt=fmt_str)
+            # add sha1 to stem ParaFrame
+            stem_pf = stem_pf.copy()
+            paths = [root / path for path in stem_pf["path"]]
+            sha_by_path = Repo.checksum_many(paths, executor)
+            stem_pf["sha1"] = [sha_by_path[p] for p in paths]
 
             # convert the ParaFrame to a manifest
-        try:
-            # compile parsers for the fmt and its variants with missing parameters
-            manifest = manifest_frame_from_pf(stem_pf, fmt_str)
-            repo.state.replace(manifest)
-            repo.dothm.dump(repo.state)
+            try:
+                # compile parsers for the fmt and its variants with missing parameters
+                manifest = manifest_frame_from_pf(stem_pf, fmt_str)
+                repo.state.replace(manifest)
+                repo.dothm.dump(repo.state)
 
-            # store objects
-            for _, row in repo.state.data.iterrows():
-                match = stem_pf[stem_pf["sha1"] == row["sha1"]]
-                if not match.empty:
-                    # store the file in the repo objects using its sha1
-                    repo.objects.store(root / match.iloc[0]["path"],
-                                        row["sha1"])
+                # store objects
+                for _, row in repo.state.data.iterrows():
+                    match = stem_pf[stem_pf["sha1"] == row["sha1"]]
+                    if not match.empty:
+                        # store the file in the repo objects using its sha1
+                        repo.objects.store(root / match.iloc[0]["path"],
+                                            row["sha1"])
 
-        except Exception as e:
-                # manifest build failed — write file list to meta.yml instead
-                repo.dothm.dump_yml({
-                    "error": str(e),
-                    "stem_key": stem_key,
-                    "files": stem_pf["path"].tolist(),
-                }, "meta")
-                repo.dothm.index.add(["meta.yml"])
+            except Exception as e:
+                    # manifest build failed — write file list to meta.yml instead
+                    repo.dothm.dump_yml({
+                        "error": str(e),
+                        "stem_key": stem_key,
+                        "files": stem_pf["path"].tolist(),
+                    }, "meta")
+                    repo.dothm.index.add(["meta.yml"])
 
-        repo.dothm.index.commit(
-                f"Add stem: {stem_key}\nFmt: {fmt_str}\nDataset: {dataset_name}")
+            repo.dothm.index.commit(
+                    f"Add stem: {stem_key}\nFmt: {fmt_str}\nDataset: {dataset_name}")
 
     # return to main
     repo.dothm.git.checkout("main")

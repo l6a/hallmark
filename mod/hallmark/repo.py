@@ -34,6 +34,10 @@ from .repo_worktree import effective_cwd, ensure_clean_tracked_files, \
     filtered_paraframe, tracked_paths
 from .state import State
 from .worktree import Worktree
+# add near the top imports
+from concurrent.futures import ThreadPoolExecutor
+import hashlib
+from concurrent.futures import ThreadPoolExecutor
 
 
 @contextmanager
@@ -206,10 +210,31 @@ class Repo:
             String: Hexadecimal SHA1 digest of the file contents.
         '''
         digest = sha1()
-        with path.open("rb") as f:
-            for block in iter(lambda: f.read(chunk_size), b""):
-                digest.update(block)
-        return digest.hexdigest()
+        try:
+            with path.open("rb") as f:
+                return hashlib.file_digest(f, "sha1").hexdigest()
+        except AttributeError:
+        # Python < 3.11 fallback
+            with path.open("rb") as f:
+                for block in iter(lambda: f.read(chunk_size), b""):
+                    digest.update(block)
+            return digest.hexdigest()
+        
+
+    @staticmethod
+    def checksum_many(paths: list[Path], executor: ThreadPoolExecutor)\
+                                -> dict[Path, str]:
+        """
+        Hash multiple files concurrently using a caller-provided, already-open executor.
+        Args:
+            paths (list[Path]): List of file paths to hash.
+            executor (ThreadPoolExecutor): An already-open ThreadPoolExecutor
+        Returns:
+            dict[Path, str]: Dictionary mapping each file path to its SHA1 checksum.
+        """
+        results = executor.map(Repo.checksum, paths)
+        return dict(zip(paths, results))
+    
 
     def add_paths(self, paths: List[Union[Path, str]]) -> ParaFrame:
         '''

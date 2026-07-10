@@ -38,6 +38,14 @@ from .worktree import Worktree
 
 @contextmanager
 def chdir(path):
+    '''
+    Temporarily change the current working directory. No Yields. 
+
+    Args:
+        Path: Directory to dwitch to while inside the context.
+    Returns:
+        None.
+    '''
     old = os.getcwd()
     os.chdir(path)
     try:
@@ -48,7 +56,8 @@ def chdir(path):
 
 @dataclass(init=False)
 class Repo:
-    """Hallmark repository.
+    """
+    Hallmark repository.
 
     This is the Python API boundary.
     It loads the in-memory ``State`` from repository ``Dothm``, and
@@ -61,12 +70,31 @@ class Repo:
 
     @staticmethod
     def lwpaths(path: Union[Path, str]) -> Tuple[Path, Optional[Path]]:
+        '''
+        Resolve repository and worktree paths.
+
+        Args:
+            path (Path | str): Path to either a worktree or a 
+            ``.hm`` repository.
+
+        Returns:
+            tuple[Path, Path | None]: A ``(dothm_path, worktree_path)`` tuple. 
+            If ``path`` refers to a ``.hm`` directory, ``worktree_path`` is ``None``.
+        '''
         path = Path(path).resolve()
         if path.suffix == ".hm":
             return path, None
         return path / ".hm", path
 
     def __init__(self, path: Union[Path, str]) -> None:
+        '''
+        Open an existing hallmark repository.
+
+        Args: 
+            path: path to a worktree or '.hm repository'/
+        Returns:
+            none.
+        '''
         dothm_path, worktree_path = self.lwpaths(path)
         self.dothm = Dothm(dothm_path)
         self.worktree = worktree_path and Worktree(worktree_path)
@@ -83,6 +111,15 @@ class Repo:
 
     @classmethod
     def init(cls, path: Union[Path, str]) -> "Repo":
+        '''
+        Initialize a new hallmark repository.
+
+        Args:
+            paht(paht|string): path to initialize a worktree or ``.hm`` repository.
+
+        Returns:
+            Repo: newly created repository instance
+        '''
         dothm_path, worktree_path = cls.lwpaths(path)
         dothm = Dothm.init(dothm_path)
         (dothm.path/"config.yml").write_text(Dothm.config_template(),encoding="utf-8")
@@ -103,6 +140,20 @@ class Repo:
         max_workers: int = 4,
         show_progress: bool = False,
     ) -> "Repo":
+        '''
+        Clone a remote hallmark repository. Raises DestinationExistsError
+        if the destination path already exists. Raises DownloadError if 
+        data download is enabled and files fail to download.
+
+        Args:
+            url(string): remote repository URL.
+            path(path|string): destination path for clone.
+            fetch_data (boolean): if true, downloads associated data files. 
+            max_workers (integer): Number of parallel workers for downloading data.
+            show_progress (boolean): wether to display download progress.
+        Returns:
+            Repo: Cloned Repository instance
+        '''
         clone_path = Path(path)
         if clone_path.exists():
             raise DestinationExistsError(
@@ -146,6 +197,15 @@ class Repo:
 
     @staticmethod
     def checksum(path: Path, chunk_size: int = 1024 * 1024) -> str:
+        '''
+        Computes the SHA1 checksum of a file. 
+
+        Args:
+            path (path): path to the file to hash.
+            chunk_size (integer): size of chunks used for streaming reads.
+        Returns:
+            String: Hexadecimal SHA1 digest of the file contents.
+        '''
         digest = sha1()
         with path.open("rb") as f:
             for block in iter(lambda: f.read(chunk_size), b""):
@@ -153,6 +213,10 @@ class Repo:
         return digest.hexdigest()
 
     def add_paths(self, paths: List[Union[Path, str]]) -> ParaFrame:
+        '''
+        Add explicit file paths to the repository index. Raises RuntimeError.
+        Operation not supported in Hallmark.
+        '''
         raise RuntimeError(
             'explicit path add is not supported while data.tsv ' \
             'stores only sha1 plus fmt fields')
@@ -165,6 +229,18 @@ class Repo:
         remote_url: Optional[str] = None,
         encoding_updates: Optional[Dict[str, str]] = None,
     ) -> dict:
+        """
+        Update repository configuration values.
+
+        Args:
+            fmt (str, optional): Data format specification.
+            remote_name (str, optional): Name of the remote repository.
+            remote_url (str, optional): URL of the remote repository.
+            encoding_updates (dict[str, str], optional): Updates to encoding rules.
+
+        Returns:
+            dict: Updated configuration dictionary.
+        """
         repo_set_config(
             self,
             fmt=fmt,
@@ -176,6 +252,20 @@ class Repo:
         return self.state.config
 
     def status(self) -> dict[str, object]:
+        """
+        Return repository status information. Includes staged changes, 
+        orktree modifications, deletions, and untracked files.
+
+        Args: 
+            none?
+
+        Returns:
+            dict[str, object]: Status summary including:
+            - branch (str)
+            - staged changes (dict)
+            - worktree changes (dict)
+            - untracked files (list[str])
+        """
         head_state = load_head_state(self)
         head_map = manifest_map(head_state)
         staged_map = manifest_map(self.state)
@@ -230,6 +320,15 @@ class Repo:
         }
 
     def add(self, fstr: str, encoding: bool = False) -> ParaFrame:
+        '''
+        Stage files or updated repository indecing from the worktree.
+
+        Args:
+            fstr (string): Format string or "." for full directory scan.
+            encoding (boolean): Whether to apply encoding rules.
+        Returns:
+            paraframe Parsed and filtered file index (without checksums).
+        '''
         if self.worktree is None:
             raise RuntimeError(
                 "cannot add files in a bare repository without a worktree")
@@ -284,6 +383,16 @@ class Repo:
         return pf.drop(columns=["sha1"], errors="ignore")
 
     def commit(self, msg: str, allow_empty: bool = False) -> bool:
+        '''
+        Commit staged changes to the repository. Raises ValueError if commit
+        message is empty or invalid. 
+
+        Args:
+            msg (string): commit message.
+            allow_empty (boolean): Allow comitting even if no changes exists.
+        Returns:
+            boolean: True if a commit was created, false otherwise. 
+        '''
         if not isinstance(msg, str) or not msg.strip():
             raise ValueError("commit message must be a non-empty string")
 
@@ -296,16 +405,42 @@ class Repo:
         return False
 
     def log(self) -> str:
+        '''
+        Return commit history log.
+
+        Returns:
+            string: Git log output, or an empty string if no valid HEAD exists.
+        '''
         if not self.dothm.head.is_valid():
             return ""
         return self.dothm.git.log()
 
     def branches(self) -> dict[str, object]:
+        '''
+        List repository branches. 
+
+        Returns:
+            dictionary[string, object]: Dictionary containing:
+                - ``current`` (string): Active branch name
+                - ``names``: All branch names
+        '''
         current = self.dothm.active_branch.name
         names = sorted(head.name for head in self.dothm.heads)
         return {"current": current, "names": names}
 
     def checkout(self, target_branch: str) -> bool:
+        '''
+        Switch to a different branch and update the worktree. Raises ValueError if
+        branch name is invalid. Raises CheckoutError if the workign directoary
+        is not clean or checkout can't be completed safely.
+
+        Args:
+            target_branch (string): Branch to switch to.
+        Returns: 
+            boolean: True if checkout succeeds.
+
+
+        '''
         if not isinstance(target_branch, str) or not target_branch.strip():
             raise ValueError("branch name must be a non-empty string")
 
@@ -364,6 +499,16 @@ class Repo:
         return True
 
     def add_worktree(self, target_branch: str) -> bool:
+        '''
+        Create or link a new worktree for a branch. Raises ValueError if branch name 
+        is invalid.
+        Rasies Runtime error if called in a bare repository or worktree creation fails.
+        
+        Args:
+            target_branch (string): Name of the branch to attach.
+        Returns:
+            boolean: True if the worktree was successfully created.
+        '''
         from shutil import copy2
         from git.exc import GitCommandError
 

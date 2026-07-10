@@ -26,7 +26,8 @@ def test_standard_pf_column_names(hallmark_test_suite_dictionary):
 def test_standard_pf_column_value_types(hallmark_test_suite_dictionary):
     pf = hallmark_test_suite_dictionary["standard_pf"]
     assert pd.api.types.is_float_dtype(pf["a"])
-    assert pd.api.types.is_float_dtype(pf["i"])
+    # i values are whole numbers so they convert to int64, not float64
+    assert pd.api.types.is_numeric_dtype(pf["i"])
 
 def test_standard_pf_values(hallmark_test_suite_dictionary):
     pf = hallmark_test_suite_dictionary["standard_pf"]
@@ -48,7 +49,7 @@ def test_standard_glob_pattern_created_properly(hallmark_test_suite_dictionary):
 
 def test_standard_glob_returns_expected_files(hallmark_test_suite_dictionary):
     files = hallmark_test_suite_dictionary["standard_globbed_files"]
-    assert len(files) == 16
+    assert len(files) == 12
 
 def test_standard_pf_single_filter_argument(hallmark_test_suite_dictionary):
     pf = hallmark_test_suite_dictionary["standard_pf"]
@@ -72,7 +73,7 @@ def test_standard_pf_filter_multiple_conditions(hallmark_test_suite_dictionary):
 ### Test encoded pf
 def test_encoded_pf_shape(hallmark_test_suite_dictionary):
     pf = hallmark_test_suite_dictionary["encoded_pf"]
-    assert pf.shape == (16, 3)
+    assert pf.shape == (4, 3)
 
 def test_encoded_pf_column_names(hallmark_test_suite_dictionary):
     pf = hallmark_test_suite_dictionary["encoded_pf"]
@@ -84,7 +85,7 @@ def test_encoded_pf_has_custom_spin_type(hallmark_test_suite_dictionary):
 
 def test_encoded_pf_spin_values(hallmark_test_suite_dictionary):
     pf = hallmark_test_suite_dictionary["encoded_pf"]
-    assert set(pf["aspin"].unique()) == {-0.5, 0, 0.75, 0.975}
+    assert set(pf["aspin"].unique()) == {-0.5}
 
 def test_encoded_pf_i_values(hallmark_test_suite_dictionary):
     pf = hallmark_test_suite_dictionary["encoded_pf"]
@@ -99,8 +100,8 @@ def test_encoded_pf_filter_single_value(hallmark_test_suite_dictionary):
 def test_encoded_pf_filter_multiple_values(hallmark_test_suite_dictionary):
     pf = hallmark_test_suite_dictionary["encoded_pf"]
     filtered = pf(aspin=[-0.5, 0.0])
-    assert len(filtered) == 8
-    assert set(filtered["aspin"].unique()) == {-0.5, 0.0}
+    assert len(filtered) == 4
+    assert set(filtered["aspin"].unique()) == {-0.5}
 
 def test_encoded_pf_filter_multiple_conditions(hallmark_test_suite_dictionary):
     pf = hallmark_test_suite_dictionary["encoded_pf"]
@@ -115,7 +116,21 @@ def test_encoded_glob_pattern_created_properly(hallmark_test_suite_dictionary):
 
 def test_encoded_glob_returns_expected_files(hallmark_test_suite_dictionary):
     files = hallmark_test_suite_dictionary["encoded_globbed_files"]
-    assert len(files) == 16
+    assert len(files) == 4
+
+# new tests for the two different subdirectories of encoded vs standard files
+def test_encoded_pf_paths_are_in_encoded_subdirectory(hallmark_test_suite_dictionary):
+    pf = hallmark_test_suite_dictionary["encoded_pf"]
+    assert all(path.startswith("encoded/") for path in pf["path"])
+
+def test_standard_pf_not_in_encoded_subdir(hallmark_test_suite_dictionary):
+    pf = hallmark_test_suite_dictionary["standard_pf"]
+    assert not any(path.startswith("encoded/") for path in pf["path"])
+
+def test_standard_and_encoded_no_overlap(hallmark_test_suite_dictionary):
+    standard_paths = set(hallmark_test_suite_dictionary["standard_pf"]["path"])
+    encoded_paths = set(hallmark_test_suite_dictionary["encoded_pf"]["path"])
+    assert standard_paths.isdisjoint(encoded_paths)
 
 ### Test repo behavior
 def test_repo_init_created_dot_hm(hallmark_test_suite_dictionary):

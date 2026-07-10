@@ -238,7 +238,8 @@ def checkout(repo, target_branch):
     try:
         if repo.checkout(target_branch):
             click.echo(f'Switched to branch "{target_branch}".')
-    except (GitError, RuntimeError, ValueError, FileNotFoundError, CheckoutError) as e:
+    except (GitError, RuntimeError, ValueError, FileNotFoundError, 
+            CheckoutError) as e:
         raise ClickException(str(e))
 
 

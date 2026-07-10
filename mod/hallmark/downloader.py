@@ -146,7 +146,8 @@ def download_remote_data(
     try:
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             futures = {
-                executor.submit(_download_file, url, destination, sha1): destination
+                executor.submit(_download_file, 
+                                url, destination, sha1): destination
                 for url, destination, sha1 in files_to_download
             }
             for future in as_completed(futures):

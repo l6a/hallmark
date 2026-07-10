@@ -25,7 +25,7 @@ def _write_text_files(root: Path, files: list[str]) -> None:
 def _encoded_data_spec() -> list[dict]:
     return [
         {
-            "fmt": "a{aspin}_i{i}.h5",
+            "fmt": "encoded/a{aspin}_i{i}.h5",
             "encoding": {
                 "aspin": r"m([0-9]+(\.[0-9]+)?|\.[0-9]+)"
             },
@@ -45,14 +45,17 @@ def hallmark_test_suite_dictionary(tmp_path_factory):
 
     # Actually write out listed files in the temporary directory
     _write_text_files(repo_path, Standard_files)
-    _write_text_files(repo_path, Encoded_files)
+    # write encoded files to separate directory to avoid globbing issues
+    encoded_path = repo_path / "encoded"
+    encoded_path.mkdir()
+    _write_text_files(encoded_path, Encoded_files)
     encoded_specs = _encoded_data_spec()
 
     # Create paraframes, glob files, glob pattern and repo behavior objects
     standard_pf = ParaFrame.parse("a{a}_i{i}.h5", base_path=repo.worktree)
 
     encoded_pf = ParaFrame.parse(
-        "a{aspin}_i{i}.h5",
+        "encoded/a{aspin}_i{i}.h5",
         base_path=repo.worktree,
         encodings=encoded_specs,
         encoding=True,
@@ -65,7 +68,7 @@ def hallmark_test_suite_dictionary(tmp_path_factory):
     )
 
     encoded_globbed_files, encoded_glob_pattern = ParaFrame.glob_search(
-        "a{aspin}_i{i}.h5",
+        "encoded/a{aspin}_i{i}.h5",
         base_path=repo.worktree,
         encodings=encoded_specs,
         encoding=True,

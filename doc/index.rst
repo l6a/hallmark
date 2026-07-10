@@ -11,6 +11,7 @@
 
     design
     usecase
+    api
 
 
 Indices and tables

@@ -8,6 +8,16 @@ from .error import CheckoutError
 
 
 def effective_cwd(repo) -> Path:
+    '''
+    Determine the effective working directory for repository operations.
+    Raises RuntimeError if the repository has no worktree
+
+    Args:
+        repo (repo): repository object
+    Returns:
+        path: The current working directory if it is inside the repository
+        worktree; otherwise, the worktree root.
+    '''
     if repo.worktree is None:
         raise RuntimeError("cannot inspect files in a bare repository " \
         "without a worktree")
@@ -22,6 +32,17 @@ def effective_cwd(repo) -> Path:
 
 
 def filtered_paraframe(repo, pf):
+    '''
+    Filter a paraframe to the effective working directory.
+
+    Args:
+        repo (Repo): Repository object.
+        pf (ParaFrame): paraframe to filter.
+    Returns:
+        Paraframe: The original paraframe if operating at the worktree root.
+        Otherwise, only rows whose paths lie within the effective working 
+        directory.
+    '''
     root = effective_cwd(repo)
     worktree = Path(repo.worktree)
     if root == worktree:
@@ -33,11 +54,32 @@ def filtered_paraframe(repo, pf):
 
 
 def tracked_paths(repo) -> set[Path]:
+    '''
+    Return the set of tracked file paths.
+
+    Args:
+        repo (Repo): Repository object.
+
+    Returns:
+        set[Path]: Paths of all files tracked in the current 
+        repository state.
+    '''
     fmt = branch_fmt(repo)
     return {path_from_row(repo, row, fmt) for _, row in repo.state.data.iterrows()}
 
 
 def ensure_clean_tracked_files(repo) -> None:
+    '''
+    Verify that tracked files and repository state are clean. No returns.
+    Raises CheckoutError if the reposiotry has no worktree, a tracked 
+    file is missing, a tracked file has uncommited changes, or the
+    hallmark state contains uncommitted changes.
+
+    Args:
+        repo (Repo): Repository object
+    Returns:
+        None.
+    '''
     if repo.worktree is None:
         raise CheckoutError("cannot checkout without a worktree")
 

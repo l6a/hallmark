@@ -42,12 +42,14 @@ class Dothm(Repo):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         if self.working_tree_dir is None:
-            raise DothmError('The ".hm" directory must be a valid git worktree.')
+            raise DothmError('The ".hm" directory must be a valid git ' \
+            'worktree.')
 
     @classmethod
     def init(cls, *args, **kwargs) -> "Dothm":
         if kwargs.get('bare', False):
-            raise DothmError('A ".hm" directory must not be a bare git repository')
+            raise DothmError('A ".hm" directory must not be a bare git ' \
+            'repository')
         kwargs.setdefault("initial_branch", "main")
 
         dothm = super().init(*args, **kwargs)
@@ -139,7 +141,8 @@ remote:
             yaml.dump(data, f, sort_keys=False)
 
     def load_tsv(self, stem: Union[Path, str]) -> pd.DataFrame:
-        return pd.read_csv((self.path/stem).with_suffix(".tsv"), sep="\t", dtype=str)
+        return pd.read_csv((self.path/stem).with_suffix(".tsv"), sep="\t", 
+                           dtype=str)
 
     def dump_tsv(self, data: pd.DataFrame, stem: Union[Path, str]) -> None:
         data.to_csv((self.path/stem).with_suffix(".tsv"), sep="\t", index=False)

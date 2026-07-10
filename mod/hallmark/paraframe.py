@@ -12,6 +12,14 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+"""
+Utilities for discovering and parsing parameterized file collections.
+
+This module defines :class:`ParaFrame`, a subclass of
+:class:`pandas.DataFrame` that provides convenient methods for locating,
+parsing, and filtering files whose names follow parameterized naming
+conventions.
+"""
 
 from glob import glob
 from pathlib import Path
@@ -21,37 +29,56 @@ import parse
 import pandas as pd
 import numpy as np
 
-from .helper_functions import find_spec_by_fmt, regex_sub
+from .helper_functions import find_spec_by_fmt, regex_sub, try_numeric_conversion
 
 
 class ParaFrame(pd.DataFrame):
     """
-    A subclass of :class:`pandas.DataFrame` with added methods for
+    A subclass of :class:`pandas.DataFrame` with additional methods for
     parameterized file discovery and filtering.
 
-    ``ParaFrame`` instances behave like ordinary DataFrames but add:
+    ``ParaFrame`` behaves like a standard ``pandas.DataFrame`` while
+    providing the following additional functionality:
 
-
-    * ``__init__``: Initialises the class and stores ``encodings`` and 
-      ``base_path`` as metadata
-        to the ParaFrame. 
-    * ``_constructor``: Returns the subclassed ParaFrame with repo_path as a
-        default keyword argument.
-    * ``glob_search'': Returns files found in the directory using format string.
-    * ``parse``: a classmethod that builds a table of file paths and parsed
-        parameters from a format pattern (using ``glob`` + ``parse``).
-    * ``__call__``/``filter``: convenience filtering by column values.
+    * ``__init__``: Initializes the class and stores ``encodings`` and
+      ``base_path`` as metadata.
+    * ``_constructor``: Returns a new ``ParaFrame`` while preserving
+      ``encodings`` and ``base_path``.
+    * ``glob_search``: Finds files matching a parameterized format string.
+    * ``parse``: Builds a ``ParaFrame`` by parsing file paths that match
+      a format pattern.
+    * ``__call__`` and ``filter``: Convenience methods for filtering rows
+      by column values.
     """
 
     _metadata = ["encodings", "base_path"]
 
     def __init__(self, data=None, encodings=None, base_path=None, **kwargs):
+        """
+        Initialize a ``ParaFrame``.
+
+        Args:
+            data: Data used to initialize the ``ParaFrame``.
+            encodings (dict, optional): Filename encoding specifications.
+                Defaults to ``{}``.
+            base_path (Path or str, optional): Root directory associated with
+                the ``ParaFrame``. Defaults to the current working directory.
+            **kwargs: Additional arguments passed to
+                :class:`pandas.DataFrame`.
+        """
         super().__init__(data, **kwargs)
         self.encodings = encodings or {}
         self.base_path = Path(base_path) if base_path is not None else Path.cwd()
 
     @property
     def _constructor(self):
+        """
+        Return the constructor used by pandas operations.
+
+        Returns:
+            callable: A constructor that preserves ``encodings`` and
+            ``base_path`` metadata.
+        """
         def _c(*args, **kwargs):
             kwargs.setdefault("encodings", self.encodings)
             kwargs.setdefault("base_path", self.base_path)
@@ -59,28 +86,35 @@ class ParaFrame(pd.DataFrame):
         return _c
 
     def __call__(self, **kwds):
+        """
+        Filter the ``ParaFrame``.
+
+        Equivalent to calling :meth:`filter`.
+
+        Args:
+            **kwds: Column names and values used for filtering.
+
+        Returns:
+            pandas.DataFrame: The filtered ``ParaFrame``.
+        """
         return self.filter(**kwds)
 
     def filter(self, **kwargs):
         """
-        Filter a pandas ``DataFrame`` by matching column values.
+        Filter a ``ParaFrame`` by matching column values.
 
-        This function utlizes provided **kwargs to filter an existing
-        ``ParaFrame`` by masking based on column values. Filtering supports
-        single- and multi-conditioned queries, returning rows that satisfy
-        any of the provided conditions.
+        This method filters the current ``ParaFrame`` by applying one or more
+        conditions on its columns. Rows satisfying any of the specified
+        conditions are returned.
 
         Args:
-        **kwargs: Arbitrary keyword arguments specifying column names
-             and values to filter by.
-        * If the value is a tuple or list, rows where the column
-               matches any of those values are selected.
-        * If the value is a scalar, rows where the column equals
-               the value are selected.
+            ``**kwargs``: Keyword arguments specifying column names and values to
+            filter by. Values may be scalars or sequences (lists or tuples).
+            Sequence values match any element in the sequence.
 
         Returns:
-         pandas.DataFrame: A filtered DataFrame containing only rows
-             that match the given conditions.
+            pandas.DataFrame: A filtered DataFrame containing only the rows
+            that satisfy the requested conditions.
         """
         mask = np.zeros(len(self), dtype=bool)
         for k, v in kwargs.items():
@@ -103,38 +137,47 @@ class ParaFrame(pd.DataFrame):
         **kwargs,
     ):
         """
-        Find all the files specified in a directory using the format string specified.
+        Find files matching a parameterized format string.
 
-        This function utilizes the provided format string to find the specified
-        files. This function also looks through .yaml files if encoding = True
-        and evaluates conditionals.
+        This method searches for files using the supplied format string.
+        When ``encoding=True``, regular-expression encodings defined in the
+        YAML configuration are also applied.
 
         Args:
-        fmt (str): A format string specifying the expected file naming
-            pattern.
-            Fields wrapped in ``{}`` will be extracted into columns.
-        *args: Positional arguments used to fill the format string.
-        encodings (dict):   The ``encodings`` list from ``State``
-            (contents of ``config.yml``).
-            Defaults to ``{}``.
-        base_path (Path):   Root directory to search from.
-            Defaults to ``Path.cwd()``.
-        debug (bool, optional): If True, prints debugging information
-            about the matching process.
-            Defaults to False.
-        return_pattern (bool, optional): Returns the pattern and globbed files.
-            Defaults to False.
-        encodings (bool,optional): If True, looks for the .yaml file and
-            extracts user specified format information.
-            Defaults to False.
-        **kwargs: Keyword arguments used to fill the format string.
-            If missing keys are encountered, they will be replaced by
-            a wildcard ``*`` for globbing.
+            fmt (str):
+                Format string describing the expected filename pattern.
+
+            ``*args``:
+                Positional arguments used to fill the format string.
+
+            encodings (dict):
+                Encoding specifications from ``config.yml``.
+
+            base_path (Path):
+                Root directory to search.
+
+            debug (bool):
+                If ``True``, prints debugging information.
+
+            return_pattern (bool):
+                If ``True``, returns both the glob pattern and the matched
+                files.
+
+            encoding (bool):
+                If ``True``, applies regex encodings defined in the YAML
+                configuration.
+
+            ``**kwargs``:
+                Keyword arguments used to fill the format string.
+                Missing values are replaced with the wildcard ``*``.
 
         Returns:
-         if return_pattern = True, it returns the pattern and the globbed files.
-         Else, it returns the globbed files, the format string with the wildcards
-         and the user specification in the .yaml file (None, if encoding = False).
+            tuple:
+                If ``return_pattern`` is ``True``, returns
+                ``(globbed_files, pattern)``.
+
+                Otherwise returns
+                ``(yaml_encodings, fmt_g, globbed_files)``.
         """
         encodings = encodings or {}
         base_path = Path(base_path) if base_path is not None else Path.cwd()
@@ -187,8 +230,8 @@ class ParaFrame(pd.DataFrame):
                 break
             except KeyError as e:
                 k = e.args[0]
-                pattern = re.sub(r"\{" + k + r":?.*?\}", "{" + k + ":s}", pattern)
-                fmt_g = re.sub(r"\{" + k + r":?.*?\}", "{" + k + ":g}", fmt_g)
+                pattern = re.sub(r"\{" + k + r":?.*?\}", "{" + k + "}", pattern)
+                fmt_g = re.sub(r"\{" + k + r":?.*?\}", "{" + k + "}", fmt_g)
                 kwargs[k] = "*"
 
         # Obtain list of files based on the glob pattern
@@ -221,28 +264,33 @@ class ParaFrame(pd.DataFrame):
         encoding=False,
         **kwargs,
     ):
-        """Build a ``ParaFrame`` by parsing file paths that match a pattern.
+        """
+        Build a ``ParaFrame`` by parsing file paths that match a format
+        string.
 
         Args:
-            fmt (str):        Format string with ``{param}`` fields.
-            encodings (dict): The ``encodings`` dict from ``State``
-                              (contents of ``hallmark.yml``).
-                              Defaults to ``{}``.
-            base_path (Path): Root directory to search from.
-                              Defaults to ``Path.cwd()``.
-            debug (bool):     Print debug info. Defaults to ``False``.
-            encoding (bool):  Apply regex encoding. Defaults to ``False``.
+            fmt (str):
+                Format string containing ``{parameter}`` fields.
+
+            encodings (dict):
+                Encoding specifications from ``config.yml``.
+                Defaults to ``{}``.
+
+            base_path (Path):
+                Root directory to search.
+                Defaults to ``Path.cwd()``.
+
+            debug (bool):
+                If ``True``, prints debugging information.
+                Defaults to ``False``.
+
+            encoding (bool):
+                If ``True``, applies regex encoding.
+                Defaults to ``False``.
 
         Returns:
-            ``ParaFrame`` where each row is a matched file with parsed
-            parameters as columns, plus a ``path`` column.
-
-        Example:
-            >>> from hallmark import ParaFrame
-            >>> pf = ParaFrame.parse(
-            ...     "/custom_parameter{custom_parameter}_p{parameter}.h5",
-            ...     encoding=True
-            ... )
+            ParaFrame: A ``ParaFrame`` whose rows correspond to matched files.
+            Parsed parameters are stored as columns together with a ``path`` column.
         """
         base_path = Path(base_path) if base_path is not None else Path.cwd()
 
@@ -272,4 +320,9 @@ class ParaFrame(pd.DataFrame):
                 print(f'Failed to parse "{f}"')
             else:
                 frame.append({"path": f_short, **r.named})
-        return cls(frame, encodings=encodings, base_path=base_path)
+        # attempt to convert each parameter column to numeric
+        # if conversion fails the column stays as string
+        result = cls(frame, encodings=encodings, base_path=base_path)
+        for col in result.columns:
+            result[col] = try_numeric_conversion(result[col])
+        return result

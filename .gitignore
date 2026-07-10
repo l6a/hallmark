@@ -6,6 +6,8 @@
 !*file
 !demo/demo_cli.ipynb
 !demo/demo_python.ipynb
+!demo/demo_datatree.ipynb
+!*.py.old
 
 __pycache__/
 *.egg-info/

@@ -16,4 +16,13 @@ __pycache__/
 
 !*.md
 !*.rst
+
+# Ignore Sphinx build output by default
 _build/
+
+# Allow the documentation build directory
+!doc/_build/
+!doc/_build/html/
+
+# Track only the Python module index
+!doc/_build/html/py-modindex.html

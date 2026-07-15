@@ -20,3 +20,6 @@ Repository State
 
 .. automodule:: hallmark.paraframe
    :members:
+
+.. automodule:: apple
+   :members:

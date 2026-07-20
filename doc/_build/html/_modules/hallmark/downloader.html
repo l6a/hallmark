@@ -186,7 +186,8 @@
     <span class="k">try</span><span class="p">:</span>
         <span class="k">with</span> <span class="n">ThreadPoolExecutor</span><span class="p">(</span><span class="n">max_workers</span><span class="o">=</span><span class="n">max_workers</span><span class="p">)</span> <span class="k">as</span> <span class="n">executor</span><span class="p">:</span>
             <span class="n">futures</span> <span class="o">=</span> <span class="p">{</span>
-                <span class="n">executor</span><span class="o">.</span><span class="n">submit</span><span class="p">(</span><span class="n">_download_file</span><span class="p">,</span> <span class="n">url</span><span class="p">,</span> <span class="n">destination</span><span class="p">,</span> <span class="n">sha1</span><span class="p">):</span> <span class="n">destination</span>
+                <span class="n">executor</span><span class="o">.</span><span class="n">submit</span><span class="p">(</span><span class="n">_download_file</span><span class="p">,</span> 
+                                <span class="n">url</span><span class="p">,</span> <span class="n">destination</span><span class="p">,</span> <span class="n">sha1</span><span class="p">):</span> <span class="n">destination</span>
                 <span class="k">for</span> <span class="n">url</span><span class="p">,</span> <span class="n">destination</span><span class="p">,</span> <span class="n">sha1</span> <span class="ow">in</span> <span class="n">files_to_download</span>
             <span class="p">}</span>
             <span class="k">for</span> <span class="n">future</span> <span class="ow">in</span> <span class="n">as_completed</span><span class="p">(</span><span class="n">futures</span><span class="p">):</span>

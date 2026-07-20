@@ -1,85 +1,93 @@
-# API Reference
+API Reference
+=============
 
 This section contains the automatically generated API documentation for the
-`hallmark` package.
+``hallmark`` package.
 
-## Core Repository
+Core Repository
+---------------
 
 .. automodule:: hallmark.repo
-:members:
-:show-inheritance:
+   :members:
+   :show-inheritance:
 
 .. automodule:: hallmark.repo_state
-:members:
-:show-inheritance:
+   :members:
+   :show-inheritance:
 
 .. automodule:: hallmark.repo_config
-:members:
-:show-inheritance:
+   :members:
+   :show-inheritance:
 
 .. automodule:: hallmark.repo_manifest
-:members:
-:show-inheritance:
+   :members:
+   :show-inheritance:
 
-## Repository Worktrees
+Repository Worktrees
+--------------------
 
 .. automodule:: hallmark.worktree
-:members:
-:show-inheritance:
+   :members:
+   :show-inheritance:
 
 .. automodule:: hallmark.repo_worktree
-:members:
-:show-inheritance:
+   :members:
+   :show-inheritance:
 
-## State Management
+State Management
+----------------
 
 .. automodule:: hallmark.state
-:members:
-:show-inheritance:
+   :members:
+   :show-inheritance:
 
-## Data Handling
+Data Handling
+-------------
 
 .. automodule:: hallmark.paraframe
-:members:
-:show-inheritance:
+   :members:
+   :show-inheritance:
 
 .. automodule:: hallmark.objects
-:members:
-:show-inheritance:
+   :members:
+   :show-inheritance:
 
 .. automodule:: hallmark.eht_datatree
-:members:
-:show-inheritance:
+   :members:
+   :show-inheritance:
 
-## Downloading
+Downloading
+-----------
 
 .. automodule:: hallmark.downloader
-:members:
-:show-inheritance:
+   :members:
+   :show-inheritance:
 
-## Utilities
+Utilities
+---------
 
 .. automodule:: hallmark.helper_functions
-:members:
-:show-inheritance:
+   :members:
+   :show-inheritance:
 
 .. automodule:: hallmark.fmt_detection
-:members:
-:show-inheritance:
+   :members:
+   :show-inheritance:
 
 .. automodule:: hallmark.dothm
-:members:
-:show-inheritance:
+   :members:
+   :show-inheritance:
 
 .. automodule:: hallmark.error
-:members:
-:show-inheritance:
+   :members:
+   :show-inheritance:
 
-## Command Line Interface
+Command Line Interface
+----------------------
 
 The Hallmark command-line interface provides commands for creating, managing,
 and interacting with Hallmark repositories.
 
 .. automodule:: hallmark.cli
-:members:
-:show-inheritance:
+   :members:
+   :show-inheritance:

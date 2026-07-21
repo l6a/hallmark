@@ -120,10 +120,6 @@ def _drop_and_greedy_search(segments, rel_path):
         A tuple of (parse.Result, drop_count) if a leak-free parse is found,
         otherwise (None, None)
     """
-
-    # reconstruct the format string from the segments, ignoring any dropped fields
-    fmt = "".join((lit + "{" + name + (":" + _fs if _fs else "") + "}") 
-                  if name is not None else lit for lit, name, _fs, _c in segments)
     literal_positions = [] # list of (start_idx, end_idx) for each literal segment
     search_start_idx = 0
     # find all literal segments that are not matched in the rel_path
@@ -633,8 +629,12 @@ def build_repo(
 
     # list of paths that could not be matched to any format, to be processed later
     unmatched_paths: list[str] = []
-    #for rel_path in remote_files:
+    print(f"Matching {len(remote_files)} files against {len(fmt_entries)} fmt(s)...")
     for file_index, rel_path in enumerate(remote_files):
+        # print progress every 100 files matched, including the current file index
+        if file_index % 100 == 0:
+            print(f"Progress: {file_index}/{len(remote_files)} files matched so far", 
+              flush=True)
         # measure the time taken to match the file against all formats
         start_time = time.time()
         # attempt to match the file against all formats and get the best match

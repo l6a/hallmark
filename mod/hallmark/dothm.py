@@ -22,7 +22,6 @@ from typing import Optional, Union
 from git import GitCommandError, Repo
 import pandas as pd
 import yaml
-import json
 
 from .state import State
 from .error import CloneError, DothmError

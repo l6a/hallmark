@@ -848,9 +848,9 @@ def test_extract_drive_extracts_archive_contents(tmp_path):
 
     assert extracted_dir.is_dir(), \
         f"unexpected extracted_dir: {extracted_dir}, expected a directory"
-    assert (extracted_dir / "inner.txt").read_text(encoding="utf-8") == "hello", \
-        f"unexpected content of inner.txt: {(extracted_dir / 'inner.txt')\
-                                        .read_text(encoding='utf-8')}, expected 'hello'"
+    actual_content = (extracted_dir / "inner.txt").read_text(encoding="utf-8")
+    assert actual_content == "hello", \
+        f"unexpected content of inner.txt: {actual_content!r}, expected 'hello'"
     
 
 def test_extract_drive_rejects_non_archive_file(tmp_path):

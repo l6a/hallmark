@@ -22,9 +22,28 @@ from typing import Optional, Union
 from git import GitCommandError, Repo
 import pandas as pd
 import yaml
+import json
 
 from .state import State
 from .error import CloneError, DothmError
+
+def _str_presenter(dumper, data):
+    """
+    se literal block style ('|') for multi-line strings so they render
+    as clean, readable text instead of PyYAML's default folded/escaped style.
+
+    Arguments:
+        dumper: The YAML dumper instance.
+        data: The string data to be represented in YAML.
+
+    Returns:
+        YAML representation of the string, using literal block style if it has newlines
+    """
+    if "\n" in data:
+        return dumper.represent_scalar("tag:yaml.org,2002:str", data, style="|")
+    return dumper.represent_scalar("tag:yaml.org,2002:str", data)
+
+yaml.add_representer(str, _str_presenter)
 
 
 class Dothm(Repo):
@@ -136,7 +155,7 @@ remote:
 
     def dump_yml(self, data: dict, stem: Union[Path, str]) -> None:
         with open((self.path/stem).with_suffix(".yml"), "w") as f:
-            yaml.dump(data, f, sort_keys=False)
+            yaml.dump(data, f, sort_keys=False, width=float("inf"))
 
     def load_tsv(self, stem: Union[Path, str]) -> pd.DataFrame:
         return pd.read_csv((self.path/stem).with_suffix(".tsv"), sep="\t", dtype=str)

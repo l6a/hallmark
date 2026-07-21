@@ -8,13 +8,16 @@ META_EXTENSIONS = [".py", ".sh", ".md", ".pdf", ".rst", ".cfg", ".ini", ".yml", 
 # common meta files to look for when building fmts
 KNOWN_META_FILES = {"README", "LICENSE", "LICENCE", "INVENTORY", "run"}
 # common drive extensions to look for when building fmts
-DRIVE_EXTENSIONS = [".tgz", ".tar", ".gz", ".zip", ".bz2", ".xz", ".zst", ".7z", ".rar"]
+DRIVE_EXTENSIONS = [".tgz", ".tar", ".zip", ".bz2", ".xz", ".zst", ".7z", ".rar"]
 # delimiter characters fmt detection splits on
-_DELIM_PATTERN = r"[_\-.]"
+_DELIM_PATTERN = r"[_\-./]"
+# treat common multi-part archive suffixes explicitly
+_MULTI_PART_DRIVE_EXTS = (".tar.gz", ".tar.bz2", ".tar.xz")
 
 # convert the extensions to lowercase and remove the leading dot for easier comparison
 DRIVE_EXTS_LOWER = {ext.lstrip(".").lower() for ext in DRIVE_EXTENSIONS}
 META_EXTS_LOWER = {ext.lstrip(".").lower() for ext in META_EXTENSIONS}
+KNOWN_META_FILES_UPPER = {name.upper() for name in KNOWN_META_FILES}
 
 _PARAM_PATTERNS: dict[str, str] = {
     "experiment": r"e\d{2}[a-z]\d{2}",   # e.g. e17a10, e17d05
@@ -64,9 +67,8 @@ def _infer_param(observed: set[str], used_names: set[str],
     return fallback
 
 def _stems_to_fmts(stems: list[str]) -> list[str]:
-    """Cluster same-token-count stems into one fmt per shared literal pattern.
-       
-        Recursively call until all fmts are found
+    """
+    Cluster same-token-count stems into one fmt per shared literal pattern.
 
     Args:
         stems: Stems (with extension reattached if present) that all have
@@ -76,7 +78,7 @@ def _stems_to_fmts(stems: list[str]) -> list[str]:
         List of fmt strings, one per distinct cluster found.
     """
     tokenized = {s: re.split(_DELIM_PATTERN, s) for s in stems}
-    # keep track of delimitors for fmt reconstruction
+    # keep track of delimiters for fmt reconstruction
     delimiters = {s: re.findall(_DELIM_PATTERN, s) for s in stems}
     remaining_stems = list(stems)
     fmts = []
@@ -89,10 +91,10 @@ def _stems_to_fmts(stems: list[str]) -> list[str]:
             # set will be length 1 if all stems have the same token at this index
             len({tokenized[s][index] for s in remaining_stems}) == 1
             for index in range(token_count))
+        
         # cluster found
         if global_has_fixed:
             cluster = list(remaining_stems)
-
         else:
             # base the anchor around the first non-assigned stem
             anchor = remaining_stems[0]
@@ -143,14 +145,18 @@ def _stems_to_fmts(stems: list[str]) -> list[str]:
                 used_names.add(inferred_name)
                 field_count += 1
 
-        # concatenate the fmt from the tokens and delimiters
-        if has_fixed:
-            cluster_delims = delimiters[cluster[0]]
-            fmt_parts = [fmt_tokens[0]]
-            for token, delim in zip(fmt_tokens[1:], cluster_delims):
-                fmt_parts.append(delim)
-                fmt_parts.append(token)
-            fmts.append("".join(fmt_parts))
+        # reconstruct the fmt from tokens and delimiters
+        cluster_delims = delimiters[cluster[0]]
+        fmt_parts = [fmt_tokens[0]]
+        for token, delim in zip(fmt_tokens[1:], cluster_delims):
+            fmt_parts.append(delim)
+            fmt_parts.append(token)
+        fmt_candidate = "".join(fmt_parts)
+
+        # only add the fmt if it has at least one fixed token or more than one stem
+        if has_fixed or len(cluster) > 1:
+            fmts.append(fmt_candidate)
+
         # remove all the stems that fit this fmt
         for stem in cluster:
             remaining_stems.remove(stem)
@@ -207,8 +213,25 @@ def _align(longer_tokens: list[str], shorter_tokens: list[str]):
     # return the first best candidate's diff positions and match status
     return best[0][1], best[0][2]
 
+def _is_drive_path(path: Path) -> bool:
+    """
+    Return True if path looks like a drive/archive file.
 
-def combine_alike_fmts(fmts: list[str]) -> list[str]:
+    Args:
+        path: Path object representing the file or directory to check.
+
+    Returns:
+        True if the path looks like a drive/archive file, False otherwise.
+    """
+    lower_name = path.name.lower()
+    # check for multi-part archive suffixes first
+    if any(lower_name.endswith(ext) for ext in _MULTI_PART_DRIVE_EXTS):
+        return True
+    # check for single-part archive suffixes
+    return path.suffix.lstrip(".").lower() in DRIVE_EXTS_LOWER
+
+def combine_alike_fmts(fmts: list[str], exclude_tokens: set[str] | None = None) \
+                                    -> list[str]:
     """
     Merge fmts that share at least one literal token into a single fmt.
 
@@ -220,6 +243,7 @@ def combine_alike_fmts(fmts: list[str]) -> list[str]:
 
     Args:
         fmts: List of fmt strings to merge.
+        exclude_tokens: Set of tokens to exclude from consideration when merging.
 
     Returns:
         List of fmt strings, with alike fmts combined into one.
@@ -227,11 +251,12 @@ def combine_alike_fmts(fmts: list[str]) -> list[str]:
     fmts = list(fmts)
     result = []
     used = [False] * len(fmts)
+    exclude_tokens = exclude_tokens or set()
 
     # tokenize every fmt once
     tokens_cache = {idx: re.split(_DELIM_PATTERN, f) for idx, f in enumerate(fmts)}
     literal_tokens_cache = {
-        idx: {t for t in tokens if not re.fullmatch(r"\{.*?\}", t)}
+        idx: {t for t in tokens if not re.fullmatch(r"\{.*?\}", t)} - exclude_tokens
         for idx, tokens in tokens_cache.items()}
 
     # for each fmt, find all other fmts that share at least one literal token
@@ -345,33 +370,36 @@ def scan_inventory(root: Path) -> list[str]:
     )
 
 
-def detect_fmt(root: Path) -> list[str]:
+def detect_fmt(rel_paths: list[str], include_drives: bool = False) -> list[str]:
     """
-    Auto-detect format strings from the files in the directory.
+    Auto-detect the fmt(s) of a list of relative file paths.
 
     Args:
-        root: Path to the dataset root directory containing the files.
+        rel_paths: List of relative file path strings to detect formats from.
+        include_drives: If True, include drive/archive files in the fmt detection.
 
     Returns:
-        List of fmt strings without extensions, one per distinct file
-        structure found in the files list.
+        List of detected fmt strings, one per distinct pattern found.
     """
-    root = Path(root).expanduser().resolve()
-    inventory_files = scan_inventory(root)
-
     data_stems = []
     seen = set()
-    for file in inventory_files:
+    # filter out any meta files or meta extensions from the list of relative paths
+    for file in rel_paths:
         path = Path(file)
         # separate the extension from the stem
         extension = path.suffix.lstrip(".").lower()
-        stem = path.stem
+        # separate the last piece of the stem from the rest of the path
+        last_piece = path.stem.split(".")[-1]
 
-        # skip any files that are known meta files or have known meta/drive extensions
-        if extension in DRIVE_EXTS_LOWER or extension in META_EXTS_LOWER:
+        # skip drive files unless explicitly requested
+        if not include_drives and _is_drive_path(path):
             continue
-        if stem.split(".")[0] in KNOWN_META_FILES:
+        # skip any files that are known meta files or have known meta extensions
+        if extension in META_EXTS_LOWER:
             continue
+        if last_piece.upper() in KNOWN_META_FILES_UPPER:
+            continue
+        stem = file
         # check this stem hasn't already been added to the list
         if stem not in seen:
             seen.add(stem)
@@ -439,7 +467,14 @@ def detect_fmt(root: Path) -> list[str]:
         # create the fmt strings for each group of stems with the same token count
         group_fmts.extend(_stems_to_fmts(same_count_stems))
 
-    fmts = combine_alike_fmts(group_fmts)
+    # find tokens that are present in every stem to avoid making them parameters
+    always_present_tokens: set[str] = set()
+    if data_stems:
+        # find the intersection of all token sets
+        token_sets = [set(stem_tokens_cache[stem]) for stem in data_stems]
+        always_present_tokens = set.intersection(*token_sets)
+
+    fmts = combine_alike_fmts(group_fmts, exclude_tokens=always_present_tokens)
     # only keep fmts that have at least 1 parameter        
     fmts = [f for f in fmts if re.search(r"\{.*?\}", f)]
 

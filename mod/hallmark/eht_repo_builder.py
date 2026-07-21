@@ -55,20 +55,30 @@ def _extract_drive(drive_path: Path) -> Path:
     Returns:
         Path to the directory where the drive was extracted.
     """
+    # shutil.unpack_archive() does not support double extensions like .tar.gz
+    _double_ext_formats = {
+        ".tar.gz": "gztar",
+        ".tar.bz2": "bztar",
+        ".tar.xz": "xztar",
+    }
     # remove extension from drive name to create the extraction directory
     name = drive_path.name
-    # remove extra drive extensions
-    for double_ext in (".tar.gz", ".tar.bz2", ".tar.xz"):
+    stem = None
+    archive_format = None
+    # for each double extension, check if the drive name ends with it
+    for double_ext, fmt_name in _double_ext_formats.items():
         if name.lower().endswith(double_ext):
             stem = name[: -len(double_ext)]
+            archive_format = fmt_name
             break
-    else:
+    # if no double extension matched, use the single extension to determine the format
+    if stem is None:
         stem = drive_path.stem
+        archive_format = _ARCHIVE_FORMAT_BY_EXT.get(drive_path.suffix.lower())
     extract_dir = drive_path.parent / stem
     
     # check that the drive has not already been extracted
     if not extract_dir.exists():
-        archive_format = _ARCHIVE_FORMAT_BY_EXT.get(drive_path.suffix.lower())
         # avoid errors with shutil in Python 3.14+ 
         kwargs = {"filter": "data"} if archive_format in \
                     ("tar", "gztar", "bztar", "xztar") else {}

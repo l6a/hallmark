@@ -20,3 +20,4 @@ _build/
 
 demo/*.hm/
 demo/**/.hm/
+!demo/**/cli_test_repos/*

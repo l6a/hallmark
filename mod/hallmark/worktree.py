@@ -27,19 +27,35 @@ class Worktree(type(Path())):
     """
 
     def __new__(cls, path: Union[Path, str]) -> "Worktree":
-        path = Path(path).resolve()
-        if path.is_dir():
-            return super().__new__(cls, path)
-        elif path.exists():
-            raise FileNotFoundError(f'Worktree "{path}" is not a directory')
-        else:
-            raise FileNotFoundError(f'Worktree "{path}" not found')
+        """Create a new Worktree instance with the given path.
+        Raises NotADirectoryError if the path is not a directory.
+        Raises FileNotFoundError if the path does not exist."""
+        # use expanduser() to handle ~ in paths and resolve() to get the absolute path
+        resolved = Path(path).expanduser().resolve()
+        # check if the resolved path exists first to avoid silent failures
+        if not resolved.exists():
+            raise FileNotFoundError(f'Worktree "{resolved}" not found')
+        # raise error instead of returning a non-existent path to avoid silent failures
+        if not resolved.is_dir():
+            raise NotADirectoryError(f'Worktree "{resolved}" is not a directory')
+
+        # if the checks pass, create a new instance of Worktree with the resolved path
+        return super().__new__(cls, resolved)
 
     @classmethod
     def init(cls, path: Union[Path, str]) -> "Worktree":
-        path = Path(path)
-        path.mkdir(parents=True, exist_ok=True)
-        return cls(path)
+        """Initialize a new Worktree at the given path. Creates the directory if it
+        does not exist, including any necessary parent directories.
+        Raises NotADirectoryError if the path exists but is not a directory."""
+        # use expanduser() to handle ~ in paths and resolve() to get the absolute path
+        resolved = Path(path).expanduser().resolve()
+        # raise error instead of returning a non-existent path to avoid silent failures
+        if resolved.exists() and not resolved.is_dir():
+            raise NotADirectoryError(f'Worktree "{resolved}" is not a directory')
+        # make the directory if it doesn't exist, including necessary parent directories
+        resolved.mkdir(parents=True, exist_ok=True)
+        # create a new instance of the Worktree class with the resolved path
+        return cls(resolved)
 
     def __truediv__(self, key):
         return Path(self) / key

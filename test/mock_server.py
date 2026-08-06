@@ -17,7 +17,7 @@ class MockServer:
         Initialize the mock server with a base URL.
         Args:
             self: The instance of the MockServer class.
-            base_url: The base URL for the mock server. It should end with a slash. 
+            base_url: The base URL for the mock server. It should end with a slash.
         """
         if not base_url.endswith("/"):
             base_url += "/"
@@ -25,6 +25,18 @@ class MockServer:
         self._html_by_url: dict[str, str] = {}
         self._content_by_url: dict[str, bytes] = {}
         self._text_by_url: dict[str, str] = {}
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        return False
+
+    def get(self, url, timeout=None):
+        return self.fake_get(url, timeout=timeout)
+
+    def head(self, url, timeout=None):
+        return self.fake_head(url, timeout=timeout)
 
     def add_directory(self, rel_dir: str, entries: list[tuple[str, str]]) -> None:
         """

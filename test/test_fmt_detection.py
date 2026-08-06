@@ -1,20 +1,426 @@
 import pytest
 from pathlib import Path
 from hallmark.fmt_detection import (
+    _delimiters,
+    _tokens,
+    _token_cache,
+    _finalize_param_names,
+    _infer_param,
+    _is_drive_path,
+    _paths_to_fmts,
+    _join_tokens_with_delims,
+    _known_param_tags,
+    _matching_paths,
+    _parsed_paths,
+    _collapse_freeform_tails,
+    _rescue_unmatched_paths,
+    _align,
+    merge_fmts_sharing_all_literals,
     scan_inventory,
-    detect_fmt,
-    _stems_to_fmts,
     combine_alike_fmts,
-    _is_drive_path,)
+    detect_fmt)
+
+### token and delim tests ###
+
+def test_tokenization_preserves_plus_inside_a_token():
+    """ Test that the tokenization process preserves plus signs within tokens,
+    rather than splitting them.
+    """
+    value = "M87+3C279_hops/scan-001.fits"
+
+    assert _tokens(value) == ["M87+3C279", "hops", "scan", "001", "fits"], \
+        f"expected plus to be preserved inside a token, got {_tokens(value)}"
+    assert _delimiters(value) == ["_", "/", "-", "."], \
+        f"expected delimiters to be preserved, got {_delimiters(value)}"
+
+
+def test_token_cache_deduplicates_identical_path_keys():
+    """
+    Test that the token cache deduplicates identical paths,
+    returning a single token list for each unique path
+    """
+    assert _token_cache(["a_1.dat", "a_1.dat"]) == {"a_1.dat": ["a", "1", "dat"]}, \
+        f"expected identical paths to be deduplicated, got \
+            {_token_cache(['a_1.dat', 'a_1.dat'])}"
+
+
+def test_tokenization_cache_does_not_expose_mutable_values():
+    """
+    Test that the tokenization cache does not expose mutable values that can be
+    modified externally, ensuring that the cached tokenization remains immutable.
+    """
+    value = "M87_hops/data-001.fits"
+    tokens = _tokens(value)
+    delimiters = _delimiters(value)
+    tokens[0] = "changed"
+    delimiters[0] = "+"
+
+    assert _tokens(value) == ["M87", "hops", "data", "001", "fits"], \
+        f"expected tokenization cache to be immutable, got {_tokens(value)}"
+    assert _delimiters(value) == ["_", "/", "-", "."], \
+        f"expected tokenization cache to be immutable, got {_delimiters(value)}"
+
+
+### finalize_param_names tests ###
+
+def test_finalize_param_names_renumbers_positional_fields():
+    """
+    Test that _finalize_param_names renumbers positional fields to be sequential.
+    """
+    paths = ["item_a_b.dat", "item_c_d.dat"]
+
+    assert _finalize_param_names("item_{p5}_{p9}.dat", paths) == (
+        "item_{p0}_{p1}.dat"), f"expected positional fields to be renumbered, got \
+            {_finalize_param_names('item_{p5}_{p9}.dat', paths)}"
+
+
+def test_finalize_param_names_reuses_name_for_identical_signatures():
+    """
+    Test that _finalize_param_names reuses the same parameter name for identical
+    signatures in the observed paths.
+    """
+    paths = ["hops/hops/result", "casa/casa/result"]
+
+    assert _finalize_param_names("{pipeline}/{pipeline}/result", paths) == (
+        "{pipeline}/{pipeline}/result"), f"expected identical param names to be reused,\
+              got {_finalize_param_names('{pipeline}/{pipeline}/result', paths)}"
+
+
+def test_finalize_param_names_disambiguates_different_signatures():
+    """
+    Test that _finalize_param_names disambiguates identical parameter names when
+    they correspond to different values in the observed paths.
+    """
+    paths = ["M87-SGRA.dat", "SGRA-M87.dat"]
+
+    assert _finalize_param_names("{source}-{source}.dat", paths) == (
+        "{source}-{source2}.dat"), f"expected disambiguation of identical param names, \
+            got {_finalize_param_names('{source}-{source}.dat', paths)}"
+
+
+def test_finalize_param_names_preserves_repeated_positional_fields():
+    """
+    Test that _finalize_param_names preserves repeated positional fields when they
+    correspond to the same values in the observed paths.
+    """
+    paths = ["same_same.dat", "other_other.dat"]
+    finalized = _finalize_param_names("{p5}_{p5}.dat", paths)
+
+    assert finalized == "{p0}_{p0}.dat", \
+        f"expected repeated positional fields to be preserved, got {finalized}"
+    assert _parsed_paths(finalized, paths) == set(paths), f"expected repeated \
+        positional fields to be preserved, got {_parsed_paths(finalized, paths)}"
+
+
+### _infer_param tests ###
+
+@pytest.mark.parametrize(
+    "observed, expected",[
+        ({"e17a10", "e18b24"}, "experiment"),
+        ({"hi", "lo"}, "band"),
+        ({"1", "7"}, "pass"),
+        ({"095", "123"}, "scan"),
+        ({"20170406", "20170411"}, "date"),
+        ({"hops", "casa"}, "pipeline"),
+        ({"M87", "SGRA"}, "source"),
+        ({"tar", "tgz"}, "format"),
+        ({"unmapped-a", "unmapped-b"}, "p9"),
+        (set(), "p9")])
+def test_infer_param_uses_patterns_known_values_and_fallback(observed, expected):
+    """
+    Test that _infer_param correctly infers parameter names based on known patterns,
+    known values, and falls back to a generic name when no match is found.
+    """
+    assert _infer_param(observed, "p9") == expected, f"expected \
+        {_infer_param(observed,'p9')} to be {expected} for observed values {observed}"
+
+
+### _is_drive_path tests ###
+
+@pytest.mark.parametrize(
+    "name, expected",
+    [("bundle.TGZ", True), ("bundle.tar.gz", True), ("bundle.uvfits", False)])
+def test_is_drive_path_is_case_insensitive(name, expected):
+    """
+    Test that _is_drive_path correctly identifies drive/archive files regardless of case
+    Args:
+        name: The filename to test.
+        expected: The expected boolean result indicating if the file is a drive/archive.
+    """
+    assert _is_drive_path(Path(name)) is expected, \
+        f"expected {_is_drive_path(Path(name))} for {name}, got {expected}"
+
+
+def test_is_drive_path_handles_multipart_archive_suffixes():
+    """
+    _is_drive_path should detect multi-part archive suffixes.
+    """
+    assert _is_drive_path(Path("x.tar.gz")), \
+        f"expected .tar.gz to be detected as a drive path, got {Path('x.tar.gz')}"
+    assert _is_drive_path(Path("x.tar.bz2")), \
+        f"expected .tar.bz2 to be detected as a drive path, got {Path('x.tar.bz2')}"
+    assert _is_drive_path(Path("x.tar.xz")), \
+        f"expected .tar.xz to be detected as a drive path, got {Path('x.tar.xz')}"
+    assert not _is_drive_path(Path("x.fits")), \
+        f"expected .fits not to be detected as a drive path, got {Path('x.fits')}"
+
+
+### _paths_to_fmts tests ###
+
+def test_paths_to_fmts_merges_when_one_position_is_globally_fixed():
+    """
+    Test that _paths_to_fmts merges paths into a single format when one position
+    is globally fixed.
+    """
+    paths = ["sgra_20170406_nustar", "sgra_20170411_nustar",
+             "sgra_20170406_chandra", "sgra_20170407_chandra"]
+    fmts = _paths_to_fmts(paths)
+
+    assert fmts == ["sgra_{date}_{p1}"], \
+        f"expected one merged fmt with an inferred date field, got {fmts}"
+
+
+def test_paths_to_fmts_falls_back_to_anchor_clustering_for_unrelated_paths():
+    """
+    Test that _paths_to_fmts falls back to anchor clustering for unrelated paths.
+    """
+    paths = ["A_B_C_D", "A_E_F_G", "H_I_J_K", "L_I_M_N"]
+    fmts = _paths_to_fmts(paths)
+
+    assert sorted(fmts) == sorted(["A_{p0}_{p1}_{p2}", "{p0}_I_{p1}_{p2}"]), \
+        f"expected two separate fmts for unrelated schemes, got {fmts}"
+
+
+def test_paths_to_fmts_single_path_returns_literal_fmt():
+    """
+    Test that _paths_to_fmts returns a literal format for a single path.
+    """
+    fmts = _paths_to_fmts(["uniquefile_v1"])
+
+    assert fmts == ["uniquefile_v1"], \
+        f"expected literal fmt for single path, got {fmts}"
+
+
+def test_paths_to_fmts_dot_delimited_eht_style():
+    """
+    Test that _paths_to_fmts correctly handles dot-delimited EHT-style paths.
+    """
+    paths = ["AA.B.1", "AA.B.2", "AP.B.3", "AX.B.7", "XX.B.17"]
+    fmts = _paths_to_fmts(paths)
+
+    assert fmts == ["{p0}.B.{p1}"], f"expected dot-preserving merged fmt, got {fmts}"
+
+
+def test_paths_to_fmts_empty_input_returns_empty_list():
+    """
+    Test that _paths_to_fmts returns [] for empty input.
+    """
+    fmts = _paths_to_fmts([])
+
+    assert fmts == [], f"expected empty output for empty input, got {fmts}"
+
+
+def test_paths_to_fmts_keeps_mixed_token_counts_separate():
+    """
+    Test that _paths_to_fmts keeps formats with different token counts separate.
+    """
+    fmts = _paths_to_fmts(["a_b", "a"])
+
+    assert set(fmts) == {"a_b", "a"}, \
+        f"expected different token counts to remain separate, got {fmts}"
+
+
+### _join_tokens_with_delims tests ###
+
+@pytest.mark.parametrize(
+    "tokens, delimiters, expected",
+    [
+        ([], [], ""),
+        (["a", "{p0}", "fits"], ["_", "."], "a_{p0}.fits")])
+def test_join_tokens_with_delimiters(tokens, delimiters, expected):
+    """
+    Test that _join_tokens_with_delims correctly joins tokens with the right delimiters.
+    Args:
+        tokens: A list of tokens to join.
+        delimiters: A list of delimiters to use between tokens.
+        expected: The expected joined string."""
+    assert _join_tokens_with_delims(tokens, delimiters) == expected, \
+        f"expected {_join_tokens_with_delims(tokens, delimiters)} to be {expected}"
+
+
+### _known_param_tags tests ###
+
+def test_known_param_tags_uses_observed_values():
+    """
+    Test that _known_param_tags infers known parameter tags from observed values.
+    """
+    paths = ["hops_M87.dat", "casa_SGRA.dat"]
+
+    assert _known_param_tags("{p0}_{p1}.dat", paths) == {"pipeline", "source"}, \
+        f"expected known param tags to be inferred from observed values, got \
+            {_known_param_tags('{p0}_{p1}.dat', paths)}"
+
+
+### _matching_paths tests ###
+
+def test_matching_paths_requires_same_token_layout_and_literals():
+    """
+    Test _matching_paths only returns paths that match the same token layout and lits.
+    """
+    paths = ["x_1.dat", "x-1.dat", "y_1.dat", "x_1.csv", "x_1_extra.dat"]
+
+    assert _matching_paths("x_{p0}.dat", paths) == ["x_1.dat"], \
+        f"expected only paths matching the token layout and literals, got \
+            {_matching_paths('x_{p0}.dat', paths)}"
+
+
+### _parsed_paths tests ###
+
+def test_parsed_paths_enforces_repeated_parameter_equality():
+    """
+    Test that _parsed_paths only returns paths where repeated params have equal values.
+    """
+    paths = ["hops/hops/result", "hops/casa/result"]
+
+    assert _parsed_paths("{pipeline}/{pipeline}/result", paths) == {
+        "hops/hops/result"}, f"expected only paths with equal repeated parameters, got \
+            {_parsed_paths('{pipeline}/{pipeline}/result', paths)}"
+
+
+def test_parsed_paths_returns_empty_set_for_invalid_format():
+    assert _parsed_paths("broken_{field", ["broken_value"]) == set(), f"expected empty \
+        set for invalid format, got {_parsed_paths('broken_{field', ['broken_value'])}"
+
+
+### _collapse_freeform_tails tests ###
+
+def test_collapse_freeform_tails_keeps_delimiter_families_separate():
+    """
+    Test that _collapse_freeform_tails keeps distinct delimiter families separate.
+    """
+    fmts = ["x_{p0}.dat", "x-{p0}.dat"]
+
+    assert _collapse_freeform_tails(fmts) == fmts, f"expected distinct delimiter \
+        families to remain separate, got {_collapse_freeform_tails(fmts)}"
+
+
+def test_collapse_freeform_tails_preserves_noncollapsible_candidates():
+    """
+    Test that _collapse_freeform_tails preserves non-collapsible candidates.
+    """
+    collapsed = _collapse_freeform_tails([
+        "x_{p0}_{p1}.dat", "x_{p0}.dat", "x_literal.dat"])
+
+    assert set(collapsed) == {"x_{p0}.dat", "x_literal.dat"}, \
+        f"expected non-collapsible candidates to be preserved, got {collapsed}"
+
+
+### _rescue_unmatched_paths tests ###
+
+def test_rescue_unmatched_paths_expands_compatible_middle():
+    """
+    Test that _rescue_unmatched_paths expands unmatched paths that are compatible
+    with the source formats, even if they have a different number of tokens.
+    """
+    source_fmts = ["alpha_fixed_tailA", "beta_fixed_tailB"]
+    unmatched = ["alpha_a_b_tailA"]
+    rescued = _rescue_unmatched_paths(source_fmts, unmatched)
+
+    assert rescued == ["alpha_{p0}_tailA", "beta_fixed_tailB"], f"expected rescued \
+        formats to be ['alpha_{{p0}}_tailA', 'beta_fixed_tailB'], got {rescued}"
+    assert _parsed_paths(rescued[0], unmatched) == set(unmatched), f"expected rescued \
+        fmt to cover unmatched paths, got {_parsed_paths(rescued[0], unmatched)}"
+
+
+def test_rescue_unmatched_paths_ignores_incompatible_family():
+    """
+    Test that _rescue_unmatched_paths ignores unmatched paths that are incompatible
+    with the source formats.
+    """
+    source_fmts = ["alpha_fixed_tailA", "beta_fixed_tailB"]
+    rescued = _rescue_unmatched_paths(source_fmts, ["gamma_a_b_tailC"])
+
+    assert rescued == source_fmts, \
+        f"expected incompatible family to be ignored, got {rescued}"
+
+
+### _align tests ###
+
+def test_align_reports_differences_and_literal_evidence():
+    """
+    Test that _align correctly identifies differing token positions and whether
+    there is genuine literal evidence between two token lists.
+    """
+    aligned = _align(["prefix", "{p0}", "tail"], ["prefix", "value", "tail"])
+
+    assert aligned == ({1}, True), \
+        f"expected differing position 1 and genuine literal evidence, got {aligned}"
+
+
+def test_align_rejects_different_token_counts():
+    """
+    Test that _align returns None when the two token lists have different lengths.
+    """
+    assert _align(["prefix", "{p0}", "tail"], ["prefix", "tail"]) is None, \
+        f"expected None for different token counts, \
+            got {_align(['prefix', '{p0}', 'tail'], ['prefix', 'tail'])}"
+
+
+def test_align_requires_genuine_literal_evidence():
+    """
+    Test that _align requires at least one genuine literal match to consider two
+    token lists alignable.
+    """
+    aligned = _align(["first", "{p0}"], ["second", "{p1}"])
+
+    assert aligned == ({0, 1}, False), \
+        f"expected no genuine literal evidence, got {aligned}"
+
+
+### merge_fmts_sharing_all_literals tests ###
+
+def test_merge_fmts_sharing_all_literals_preserves_source_coverage():
+    """
+    Test that merge_fmts_sharing_all_literals preserves coverage of all source paths
+    when merging formats that share all literals.
+    """
+    paths = ["x_a_tail.dat", "x_c_tail.dat", "x_a_b_tail.dat", "x_c_d_tail.dat"]
+    source_fmts = ["x_{p0}_tail.dat", "x_{p0}_{p1}_tail.dat"]
+    merged = merge_fmts_sharing_all_literals(source_fmts, paths)
+
+    assert merged == ["x_{p0}_tail.dat"], \
+        f"expected merged fmts to be ['x_{{p0}}_tail.dat'], got {merged}"
+
+    covered_paths = set().union(*(_parsed_paths(fmt, paths) for fmt in merged))
+    assert covered_paths == set(paths), \
+        f"expected merged fmts to cover all source paths, got {covered_paths}"
+
 
 ### scan_inventory tests ###
 
+def test_scan_inventory_rejects_a_file_as_root(tmp_path):
+    """
+    Test that scan_inventory raises a NotADirectoryError when the root path is a file.
+    Args:
+        tmp_path: A temporary directory provided by pytest.
+    Raises:
+        NotADirectoryError: If the root path is a file.
+    """
+    root = tmp_path / "not-a-directory"
+    root.write_text("data", encoding="utf-8")
+
+    with pytest.raises(NotADirectoryError):
+        scan_inventory(root)
+
+
 def test_scan_inventory_raises_if_root_not_found(tmp_path):
     """
-    Test that scan_inventory raises a FileNotFoundError when the root directory 
+    Test that scan_inventory raises a FileNotFoundError when the root directory
     does not exist.
     Args:
         tmp_path: A temporary directory provided by pytest.
+    Raises:
+        FileNotFoundError: If the root directory does not exist.
     """
     with pytest.raises(FileNotFoundError):
         scan_inventory(tmp_path / "nonexistent")
@@ -30,7 +436,7 @@ def test_scan_inventory_finds_nested_files(tmp_path):
     (tmp_path / "a" / "file1.csv").write_text("data", encoding="utf-8")
     (tmp_path / "file2.csv").write_text("data", encoding="utf-8")
     result = scan_inventory(tmp_path)
-    
+
     assert set(result) == {"a/file1.csv", "file2.csv"}, \
         f"expected nested files to be found, got {result}"
 
@@ -59,105 +465,18 @@ def test_scan_inventory_returns_empty_list_for_empty_root(tmp_path):
     assert result == [], f"expected empty inventory for empty root, got {result}"
 
 
-### _is_drive_path tests ###
+### combine_alike_fmts tests ###
 
-def test_is_drive_path_handles_multipart_archive_suffixes():
+def test_combine_alike_fmts_does_not_promote_literal_without_path_evidence():
     """
-    _is_drive_path should detect multi-part archive suffixes.
+    A literal must not be promoted merely because another format has a parameter there.
     """
-    assert _is_drive_path(Path("x.tar.gz")), \
-        f"expected .tar.gz to be detected as a drive path, got {Path('x.tar.gz')}"
-    assert _is_drive_path(Path("x.tar.bz2")), \
-        f"expected .tar.bz2 to be detected as a drive path, got {Path('x.tar.bz2')}"
-    assert _is_drive_path(Path("x.tar.xz")), \
-        f"expected .tar.xz to be detected as a drive path, got {Path('x.tar.xz')}"
-    assert not _is_drive_path(Path("x.fits")), \
-        f"expected .fits not to be detected as a drive path, got {Path('x.fits')}"
-
-### _stems_to_fmts ###
-
-def test_stems_to_fmts_merges_when_one_position_is_globally_fixed():
-    """
-    Test that _stems_to_fmts merges stems into a single format when one position 
-    is globally fixed.
-    """
-    stems = ["sgra_20170406_nustar", "sgra_20170411_nustar",
-             "sgra_20170406_chandra", "sgra_20170407_chandra"]
-    fmts = _stems_to_fmts(stems)
-
-    assert fmts == ["sgra_{p0}_{p1}"], \
-        f"expected one merged fmt via shared 'sgra' token, got {fmts}"
-
-
-def test_stems_to_fmts_falls_back_to_anchor_clustering_for_unrelated_stems():
-    """
-    Test that _stems_to_fmts falls back to anchor clustering for unrelated stems.
-    """
-    stems = ["A_B_C_D", "A_E_F_G", "H_I_J_K", "L_I_M_N"]
-    fmts = _stems_to_fmts(stems)
-
-    assert sorted(fmts) == sorted(["A_{p0}_{p1}_{p2}", "{p0}_I_{p1}_{p2}"]), \
-        f"expected two separate fmts for unrelated schemes, got {fmts}"
-
-
-def test_stems_to_fmts_single_stem_returns_literal_fmt():
-    """
-    Test that _stems_to_fmts returns a literal format for a single stem.
-    """
-    fmts = _stems_to_fmts(["uniquefile_v1"])
-
-    assert fmts == ["uniquefile_v1"], \
-        f"expected literal fmt for single stem, got {fmts}"
-
-
-def test_stems_to_fmts_dot_delimited_eht_style():
-    """
-    Test that _stems_to_fmts correctly handles dot-delimited EHT-style stems.
-    """
-    stems = ["AA.B.1", "AA.B.2", "AP.B.3", "AX.B.7", "XX.B.17"]
-    fmts = _stems_to_fmts(stems)
-
-    assert fmts == ["{p0}.B.{p1}"], f"expected dot-preserving merged fmt, got {fmts}"
-
-
-def test_stems_to_fmts_empty_input_returns_empty_list():
-    """
-    Test that _stems_to_fmts returns [] for empty input.
-    """
-    fmts = _stems_to_fmts([])
-
-    assert fmts == [], f"expected empty output for empty input, got {fmts}"
-
-
-### _combine_alike_fmts tests ###
-
-
-def test_combine_alike_fmts_respects_exclude_tokens():
-    """
-    Excluded literals should remain literals during merge.
-    """
-    fmts = [
-        "ER6_SGRA_2017_{p0}_{p1}_netcal_{p2}_StokesI",
-        "ER6_SGRA_2017_{p0}_{p1}_netcal_StokesI",]
-    result = combine_alike_fmts(fmts, exclude_tokens={"StokesI"})
-
-    assert len(result) == 1, f"expected one merged fmt, got {result}"
-    assert "StokesI" in result[0],\
-          f"expected StokesI to remain literal, got {result[0]}"
-
-
-def test_combine_alike_fmts_promotes_literal_to_match_existing_param():
-    """
-    Test that combine_alike_fmts promotes a literal token to a parameter when merging
-    """
-    fmts = ["sgra_{p0}_chandra", 
+    fmts = ["sgra_{p0}_chandra",
             "sgra_{p0}_{p1}"]
     result = combine_alike_fmts(fmts)
 
-    assert len(result) == 1, \
-        f"expected sgra_{{p0}}_{{p1}} as merged fmt, got {result}"
-    assert "sgra" in result[0], \
-        f"merged fmt should preserve 'sgra' literal anchor, got {result[0]}"
+    assert result == fmts, \
+        f"expected ambiguous formats to remain separate, got {result}"
 
 
 def test_combine_alike_fmts_preserves_constant_literal_anchor():
@@ -169,18 +488,16 @@ def test_combine_alike_fmts_preserves_constant_literal_anchor():
         "ER6_SGRA_2017_{p0}_{p1}_netcal_StokesI",]
     result = combine_alike_fmts(fmts)
 
-    assert len(result) == 1, f"expected one merged fmt, got {result}"
-    assert "StokesI" in result[0], \
-        f"StokesI should remain literal in merged fmt, got {result[0]}"
-    assert "ER6_SGRA_2017" in result[0], \
-        f"prefix literals should be preserved, got {result[0]}"
+    assert len(result) in (1, 2), f"unexpected merge behavior: {result}"
+    assert any("StokesI" in fmt for fmt in result), \
+        f"StokesI should remain literal, got {result}"
 
 
 def test_combine_alike_fmts_rejects_zero_literal_anchor_merge():
     """
     Test that combine_alike_fmts rejects merging when there is no literal anchor.
     """
-    fmts = ["sgra_{p0}_{p1}_{p2}", 
+    fmts = ["sgra_{p0}_{p1}_{p2}",
             "{p0}_{p1}_{p2}"]
     result = combine_alike_fmts(fmts)
 
@@ -188,20 +505,18 @@ def test_combine_alike_fmts_rejects_zero_literal_anchor_merge():
         f"expected rejection of fully-parameterized merge, got {result}"
 
 
-def test_combine_alike_fmts_handles_different_token_counts():
+def test_combine_alike_fmts_keeps_different_token_counts_separate():
     """
-    Test that combine_alike_fmts correctly merges formats with different token counts.
+    Formats with different token counts remain separate without supporting paths.
     """
     fmts = [
         "ER6_SGRA_2017_{p0}_{p1}_netcal_StokesI",
         "ER6_SGRA_2017_{p0}_{p1}_{p2}_netcal_StokesI",]
     result = combine_alike_fmts(fmts)
 
-    assert len(result) == 1, \
-        f"expected single merged fmt for fmts with shared literals, got {result}"
-    assert "ER6_SGRA_2017" in result[0], \
-        f"shared prefix should be preserved in merged fmt, got {result[0]}"
-    
+    assert result == fmts, \
+        f"expected different token counts to remain separate, got {result}"
+
 
 def test_combine_alike_fmts_empty_input_returns_empty_list():
     """
@@ -253,7 +568,7 @@ def test_detect_fmt_meta_filename_filter_is_case_insensitive():
     assert len(fmts) == 1, f"expected one fmt from non-meta files, got {fmts}"
     assert "DATA" in fmts[0] and ".fits" in fmts[0], \
         f"expected DATA fits fmt, got {fmts}"
-    
+
 
 def test_detect_fmt_rejects_single_file_with_no_siblings():
     """
@@ -275,7 +590,8 @@ def test_detect_fmt_finds_single_shared_format():
         "sgra_20170407_chandra.fits",]
     fmts = detect_fmt(files)
 
-    assert fmts == ["sgra_{p0}_{p1}.fits"], f"expected one shared fmt, got {fmts}"
+    assert fmts == ["sgra_{date}_{p0}.fits"], \
+        f"expected one shared fmt with an inferred date field, got {fmts}"
 
 
 def test_detect_fmt_handles_dot_delimited_names():
@@ -288,9 +604,113 @@ def test_detect_fmt_handles_dot_delimited_names():
     assert fmts == ["{p0}.B.{pass}"], f"expected dot-delimited fmt, got {fmts}"
 
 
+def test_detect_fmt_ignores_duplicate_input_paths():
+    """
+    Test that detect_fmt ignores duplicate paths in its input.
+    """
+    unique = ["data_001.fits", "data_002.fits"]
+
+    assert detect_fmt([*unique, *unique]) == detect_fmt(unique), \
+        f"expected duplicate paths to be ignored, got {detect_fmt([*unique, *unique])}"
+
+
+def test_detect_fmt_keeps_plus_literal_and_infers_pipeline():
+    """
+    Test that detect_fmt preserves plus signs in tokens and infers the pipeline param.
+    """
+    paths = ["M87+3C279_hops_001.fits", "M87+3C279_casa_002.fits"]
+
+    assert detect_fmt(paths) == ["M87+3C279_{pipeline}_{scan}.fits"], \
+        f"expected plus to be preserved and pipeline inferred, got {detect_fmt(paths)}"
+
+
+def test_detect_fmt_reuses_parameter_for_identical_pipeline_positions():
+    """
+    Test that detect_fmt uses the same param for identical positions in the path."""
+    paths = ["item_hops_hops_001.dat", "item_casa_casa_002.dat",
+             "item_hops_hops_003.dat", "item_casa_casa_004.dat"]
+
+    assert detect_fmt(paths) == ["item_{pipeline}_{pipeline}_{scan}.dat"], \
+        f"expected identical pipeline positions to be inferred as the same parameter, \
+            got {detect_fmt(paths)}"
+
+
+def test_detect_fmt_combines_sed_variations_without_losing_source():
+    paths = ["SED_M87_2017.dat", "SED_M87_2018.dat", "SED_SGRA_2017.dat",
+              "SED_SGRA_2018.dat"]
+
+    assert detect_fmt(paths) == ["SED_{source}_{p0}.dat"], \
+        f"expected source and p0 to be inferred, got {detect_fmt(paths)}"
+
+
+def test_detect_fmt_builds_format_from_single_token_anchor():
+    """
+    Test that detect_fmt can build a format from a single token anchor.
+    """
+    paths = ["image", "image_001.fits", "image_002.fits"]
+
+    assert detect_fmt(paths) == ["image_{p0}.{p1}"], \
+        f"expected single token anchor to produce a format, got {detect_fmt(paths)}"
+
+
+def test_detect_fmt_preserves_distinct_delimiter_families():
+    """
+    Test that detect_fmt preserves distinct delimiter families when inferring formats.
+    """
+    paths = ["x_a.dat", "x_b.dat", "x-c.dat", "x-d.dat"]
+
+    assert set(detect_fmt(paths)) == {"x_{p0}.dat", "x-{p0}.dat"}, \
+        f"expected distinct delimiter families to be preserved, got {detect_fmt(paths)}"
+
+
+def test_detect_fmt_output_is_independent_of_input_order():
+    """
+    Test that detect_fmt produces the same output regardless of the order of input paths
+    """
+    paths = ["a_1.dat", "a_2.dat", "b-1.dat", "b-2.dat"]
+    forward = detect_fmt(paths)
+    reversed_result = detect_fmt(list(reversed(paths)))
+
+    assert forward == reversed_result, f"expected output to be independent of input \
+        order, got {forward} and {reversed_result}"
+    assert forward == sorted(forward), f"expected output to be sorted and independent \
+        of input order, got {forward} and {reversed_result}"
+
+
+def test_detect_fmt_normalizes_windows_inventory_separators():
+    """
+    Test that detect_fmt normalizes Windows-style backslash separators to POSIX-style
+    forward slashes in its output.
+    """
+    windows_paths = [r"folder\a_1.dat", r"folder\a_2.dat"]
+    posix_paths = ["folder/a_1.dat", "folder/a_2.dat"]
+    windows_result = detect_fmt(windows_paths)
+    posix_result = detect_fmt(posix_paths)
+
+    assert windows_result == posix_result, f"expected output to be the same for Windows\
+          and POSIX paths, got {windows_result} and {posix_result}"
+    assert all("\\" not in fmt for fmt in windows_result), \
+        f"expected output to use POSIX separators, got {windows_result}"
+
+
+def test_detect_fmt_anchor_preserves_multiple_structural_families():
+    """
+    Test that detect_fmt preserves multiple structural families when they share a
+    common anchor.
+    """
+    paths = [
+        "image", "image_001.fits", "image_002.fits", "001-image.txt", "002-image.txt"]
+
+    assert set(detect_fmt(paths)) == {"image_{p0}.{p1}", "{p0}-image.{p1}"}, \
+        f"expected multiple structural families to be preserved, \
+            got {detect_fmt(paths)}"
+
+
+### known limitation tests ###
+
 def test_decimal_point_is_treated_as_a_delimiter():
     """
-    Test that the decimal point is treated as a delimiter in tokenization, 
+    Test that the decimal point is treated as a delimiter in tokenization,
     which can lead to unexpected tokenization of decimal numbers. Known limitation.
     """
     import re

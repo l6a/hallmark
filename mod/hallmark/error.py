@@ -47,15 +47,21 @@ class CloneError(HallmarkError, GitError):
 
         if clone_path is not None and display_path is not None:
             clone_path = Path(clone_path)
-            display_path = Path(display_path)
-            for candidate in (str(clone_path), str(clone_path.resolve())):
-                text = text.replace(candidate, str(display_path))
+            display_text = str(Path(display_path))
+            # all possible versions of the clone path to replace in the error message
+            clone_candidates = {
+                str(clone_path),
+                str(clone_path.expanduser().resolve()),}
+            # for each candidate, replace it in the error message with the display text
+            for candidate in sorted(clone_candidates, key=len, reverse=True):
+                text = text.replace(candidate, display_text)
 
         return cls(text)
 
 
 class DestinationExistsError(CloneError):
     """Raised when clone destination already exists."""
+
 
 class CheckoutError(HallmarkError):
     """Raised when a hallmark checkout cannot proceed safely."""

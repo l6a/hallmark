@@ -1,0 +1,25 @@
+data:
+- name: inventory
+  file: INVENTORY.txt
+  md5: 2c24827c04a81055897aef524110179c
+- name: license
+  file: LICENSE.txt
+  md5: 7177765c4d9d3ba7d74281362186c926
+- name: readme
+  file: README.md
+  md5: a8a7d2907a569f09154a72a1b3d35f4d
+- fmt: '{project_code}/group.uid{guid}.{author}.{kind}.{format}'
+  db: description.tsv
+- fmt: '{eht_project_code}/group.uid{guid}.{author}.{scope}-processing-logs.{format}'
+  db: log.tsv
+- fmt: '{project_date}/{eht_project_code}/group.uid{guid}.{author}.{prefix}track{track}-{date}.app_deliverables.{format}'
+  db: deliverables.tsv
+- fmt: '{eht_project_code}/group.uid{guid}.{author}.{track}-{alma_band}-{eht_band}-{source}-{scan_code}-{sequence}-{kind}.{format}'
+  db: data.tsv
+- fmt: '{eht_project_code}/group.uid{guid}.{author}.metadata-{eht_product_code}.{format}'
+  db: meta.tsv
+- fmt: '{eht_project_code}.{algorithm}sums'
+  db: checksums.tsv
+remote:
+- name: origin
+  url: https://data.cyverse.org/dav-anon/iplant/commons/cyverse_curated/EHTC_2017L1_May2022/

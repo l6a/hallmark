@@ -21,8 +21,9 @@ jobs:
         with:
           python-version: "3.13"
           
-      - name: Install sphinx
+      - name: Install package and documentation dependencies
         run: |
+          pip install .
           pip install sphinx
 
       - name: Build docs

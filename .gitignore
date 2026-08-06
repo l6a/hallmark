@@ -16,6 +16,8 @@ __pycache__/
 
 !*.md
 !*.rst
+
+# Ignore Sphinx build output by default
 _build/
 
 demo/*.hm/

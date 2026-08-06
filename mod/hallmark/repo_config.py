@@ -207,7 +207,16 @@ def fmt_entries_from_config(config: dict) -> list[dict]:
 
 
 def _single_data_spec(config) -> Optional[dict]:
-    """"""
+    """
+    Extract the single data specification from a repository configuration.
+
+    Args:
+        config (dict): The repository configuration dictionary.
+
+    Returns:
+        Optional[dict]: The single data specification if defined,
+        or None if not defined or if the configuration is invalid.
+    """
     # if the provided config is not a dictionary, return None
     if not isinstance(config, dict):
         return None
@@ -247,35 +256,25 @@ def single_data_fmt(config: dict) -> Optional[str]:
 
 def ensure_branch_data_spec(config: dict) -> dict:
     """
-    Ensure that the repository configuration defines exactly one entry under the "data"
-    section. If "data" is not defined, it initializes it with a single empty dictionary.
-    Raises RuntimeError if "data" is defined but does not contain exactly one entry.
+    Ensure the configuration contains a valid data specification.
+
+    If the ``data`` entry is missing or malformed, it is initialized with
+    a single empty dictionary.
 
     Args:
-        config (dict): The repository configuration dictionary.
+        config (dict): Repository configuration.
 
     Returns:
-        dict: The first (and only) entry in the "data" list.
+        dict: The branch data specification.
     """
     # get the "data" section from the configuration
     data = config.get("data")
-    # if "data" is not defined or is an empty list
-    if data is None or data == []:
-        # initialize it with a single empty dictionary
-        config["data"] = [{}]
-        return config["data"][0]
-
-    # validate that "data" is a list of dictionaries
-    if not isinstance(data, list) or not all(isinstance(entry, dict) for entry in data):
-        # raise an error if "data" is not a list of dictionaries
-        raise RuntimeError(
-            'branch config must define "data" as a list of dictionaries')
-    # if there is not exactly one entry in the "data" list, raise an error
-    if len(data) != 1:
-        raise RuntimeError(
-            "this operation requires exactly one data entry; "
-            f"the repository defines {len(data)} entries")
-    return data[0]
+    # if "data" already defines exactly one dictionary entry, use it as-is
+    if isinstance(data, list) and len(data) == 1 and isinstance(data[0], dict):
+        return data[0]
+    # otherwise (missing, empty, or malformed), initialize it with a single empty dict
+    config["data"] = [{}]
+    return config["data"][0]
 
 
 def branch_data_spec(repo) -> dict:
@@ -322,19 +321,23 @@ def set_config(
     remote_name: Optional[str] = None,
     remote_url: Optional[str] = None,
     encoding_updates: Optional[Dict[str, str]] = None,
-    ) -> dict:
+) -> dict:
     """
-    Update the repository configuration with new values.
+    Update the repository configuration.
+
+    Existing configuration values are preserved unless explicitly
+    replaced.
 
     Args:
         repo: Repository object.
-        fmt (str, optional): New filename format.
-        remote_name (str, optional): New remote repository name.
-        remote_url (str, optional): New remote repository URL.
-        encoding_updates (dict, optional): Updates to the filename encoding.
+        fmt (str, optional): Filename format.
+        remote_name (str, optional): Remote repository name.
+        remote_url (str, optional): Remote repository URL.
+        encoding_updates (dict, optional): Encoding values to merge into
+            the existing configuration.
 
     Returns:
-        dict: The updated repository configuration.
+        dict: The updated configuration.
     """
     config = repo.state.config
     # raise a ValueError if the provided config is not a dictionary
@@ -656,3 +659,20 @@ def row_to_path(row, fmt: str) -> Path:
     # validate the rendered path to ensure it is a safe relative path
     return validate_relative_path(rendered_path, label="formatted data path")
 
+
+def path_from_row(repo, row, fmt: Optional[str] = None) -> Path:
+    """
+    Construct a file path from a table row.
+
+    If no format string is provided, the repository's configured format
+    is used.
+
+    Args:
+        repo: Repository object.
+        row: Table row containing field values.
+        fmt (str, optional): Format string to use.
+
+    Returns:
+        Path: Path generated from the row values.
+    """
+    return row_to_path(row, fmt or branch_fmt(repo))

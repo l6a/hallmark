@@ -17,10 +17,13 @@ from dataclasses import dataclass, field
 
 import pandas as pd
 
+# Define the default columns for the state DataFrame
 COLUMNS = ["sha1"]
+
 
 def _normalized_state_data(frame: pd.DataFrame) -> pd.DataFrame:
     """
+    Used by update and replace.
     Normalize the state data by retaining only the relevant columns and ensuring
     that all non-checksum columns are of string type.
 

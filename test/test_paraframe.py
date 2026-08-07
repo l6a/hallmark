@@ -57,6 +57,7 @@ def test_paraframe_class_functionality(create_temp_data):
     assert len(mask_filter) == 40
     assert all(mask_filter["a"].unique() == [1,2,3,4])
 
+
 def test_debug(create_temp_data, capsys, tmp_path):
     # users want to see a detailed summary of how ParaFrame utilizes globbing
     fmt = "a_{a:d}/b_{b:d}.txt"
@@ -96,6 +97,7 @@ def test_glob_search_applies_final_wildcard_for_short_format(tmp_path):
     assert matches == sorted([str(first), str(second)]), \
         f"Expected matches: {[str(first), str(second)]}, but got: {matches}"
 
+
 def test_glob_search_excludes_directories(tmp_path):
     """
     Test that ParaFrame.glob_search correctly excludes directories from the results.
@@ -129,6 +131,23 @@ def test_glob_search_rejects_nonmapping_encoding_entries(tmp_path):
             "a_{spin}.dat", base_path=tmp_path, encodings=["invalid"], encoding=True)
 
 
+def test_glob_search_encoding_true_rejects_noniterable_encodings(tmp_path):
+    """
+    Test that ParaFrame.glob_search raises when encodings is neither mapping nor
+    iterable of mappings.
+    Args:
+        tmp_path (Path): Temporary directory provided by pytest for testing.
+    Raises:
+        ValueError: If encodings is not a mapping or sequence of mappings.
+    """
+    with pytest.raises(ValueError, match="mapping or sequence of mappings"):
+        ParaFrame.glob_search(
+            "a_{n}.dat",
+            base_path=tmp_path,
+            encodings=123,
+            encoding=True)
+
+
 ### parse tests ###
 
 def test_parse_accepts_single_encoding_mapping(tmp_path):
@@ -147,3 +166,137 @@ def test_parse_accepts_single_encoding_mapping(tmp_path):
 
     assert frame["aspin"].tolist() == [-0.5], \
         f"Expected spin value: [-0.5], but got: {frame['aspin'].tolist()}"
+
+
+def test_parse_encoding_false_ignores_invalid_encoding_specs(tmp_path):
+    """
+    Test that ParaFrame.parse ignores encoding spec validation when encoding=False.
+    Args:
+        tmp_path (Path): Temporary directory provided by pytest for testing.
+    """
+    data_path = tmp_path / "a_1.dat"
+    data_path.write_text("contents\n", encoding="utf-8")
+    frame = ParaFrame.parse(
+        "a_{n}.dat",
+        base_path=tmp_path,
+        encodings=["not-a-mapping"],
+        encoding=False)
+
+    assert frame["n"].tolist() == [1], \
+        f"Expected parsed value [1], but got: {frame['n'].tolist()}"
+
+
+def test_parse_encoding_true_requires_matching_fmt_spec(tmp_path):
+    """
+    Test that ParaFrame.parse raises when encoding=True and no matching fmt encoding
+    entry exists.
+    Args:
+        tmp_path (Path): Temporary directory provided by pytest for testing.
+    Raises:
+        ValueError: If no matching fmt encoding entry exists when encoding=True.
+    """
+    with pytest.raises(ValueError, match="missing from hallmark.yml"):
+        ParaFrame.parse(
+            "a_{n}.dat",
+            base_path=tmp_path,
+            encodings=[{
+                "fmt": "different_{n}.dat",
+                "encoding": {"n": r"[0-9]+"}}],
+            encoding=True)
+
+
+def test_parse_encoding_true_rejects_nonstring_patterns(tmp_path):
+    """
+    Test that ParaFrame.parse raises when an encoding regex value is not a string.
+    Args:
+        tmp_path (Path): Temporary directory provided by pytest for testing.
+    Raises:
+        ValueError: If an encoding regex value is not a string.
+    """
+    with pytest.raises(ValueError, match="must be strings"):
+        ParaFrame.parse(
+            "a_{n}.dat",
+            base_path=tmp_path,
+            encodings={
+                "fmt": "a_{n}.dat",
+                "encoding": {"n": 123}},
+            encoding=True)
+
+
+def test_parse_skips_files_that_fail_to_match_after_encoding(tmp_path, capsys):
+    """
+    Test that ParaFrame.parse silently skips (and reports) a globbed file whose
+    encoded name no longer matches the parse template, rather than raising.
+    Args:
+        tmp_path (Path): Temporary directory provided by pytest for testing.
+        capsys: Pytest fixture for capturing stdout/stderr.
+    """
+    data_path = tmp_path / "a_qq.dat"
+    data_path.write_text("contents\n", encoding="utf-8")
+    # this "aspin" regex rewrites the literal "a_" prefix itself, so the encoded
+    # name no longer matches the "a_{n}.dat" parser template at all
+    encoding = {"fmt": "a_{n}.dat", "encoding": {"aspin": r"(a)_"}}
+
+    frame = ParaFrame.parse(
+        "a_{n}.dat", base_path=tmp_path, encodings=encoding, encoding=True)
+
+    assert frame.empty, \
+        f"Expected no rows since the encoded name no longer matches, got {frame}"
+    captured = capsys.readouterr()
+    assert "Failed to parse" in captured.out, \
+        f"Expected a 'Failed to parse' message, got: {captured.out!r}"
+
+
+### _resolve_encoding_spec tests ###
+
+def test_resolve_encoding_spec_narrows_to_matching_entry_fmt():
+    """
+    Test that _resolve_encoding_spec uses a narrower entry "fmt" as fmt_enc when
+    that entry's fmt is found within the full searched fmt.
+    """
+    encodings = [{"fmt": "a_{aspin}.dat", "encoding": {"aspin": r"m([0-9]+)"}}]
+    yaml_encodings, fmt_enc = ParaFrame._resolve_encoding_spec(
+        "prefix_a_{aspin}.dat", encodings, encoding=True)
+
+    assert fmt_enc == "a_{aspin}.dat", \
+        f"Expected fmt_enc to narrow to the matching entry's fmt, got {fmt_enc!r}"
+    assert yaml_encodings == encodings[0], \
+        f"Expected the matching encoding spec, got {yaml_encodings}"
+
+
+def test_resolve_encoding_spec_rejects_nondict_encoding_value():
+    """
+    Test that _resolve_encoding_spec raises when an encoding spec's "encoding"
+    value is not itself a dictionary.
+    Raises:
+        ValueError: If the "encoding" value in the matching encoding spec is not a
+            dictionary.
+    """
+    encodings = {"fmt": "a_{n}.dat", "encoding": "not-a-dict"}
+
+    with pytest.raises(ValueError, match="must be a dictionary"):
+        ParaFrame._resolve_encoding_spec("a_{n}.dat", encodings, encoding=True)
+
+
+def test_resolve_encoding_spec_rejects_empty_regex_spec():
+    """
+    Test that _resolve_encoding_spec raises when the matching encoding spec has
+    no non-empty regex patterns.
+    Raises:
+        ValueError: If the matching encoding spec has no non-empty regex patterns.
+    """
+    encodings = {"fmt": "a_{n}.dat", "encoding": {"n": ""}}
+
+    with pytest.raises(ValueError, match="has no regex spec"):
+        ParaFrame._resolve_encoding_spec("a_{n}.dat", encodings, encoding=True)
+
+
+def test_resolve_encoding_spec_requires_encodings_when_encoding_true():
+    """
+    Test that _resolve_encoding_spec raises when encoding=True but no encodings
+    were provided at all.
+    Raises:
+        ValueError: If encoding=True but no encodings were provided.
+    """
+    with pytest.raises(ValueError, match="missing from hallmark.yml"):
+        ParaFrame._resolve_encoding_spec("a_{n}.dat", None, encoding=True)

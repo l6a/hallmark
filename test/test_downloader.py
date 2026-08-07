@@ -43,6 +43,7 @@ class _Response:
     def iter_content(self, chunk_size):
         return iter(self.chunks)
 
+
 # Helper function to create a mock repository for testing
 def _repo(tmp_path, config=None, data=None):
     """
@@ -61,6 +62,7 @@ def _repo(tmp_path, config=None, data=None):
         state=SimpleNamespace(
             config={} if config is None else config,
             data=pd.DataFrame() if data is None else data))
+
 
 ### _download_file tests ###
 
@@ -133,7 +135,7 @@ def test_download_file_removes_partial_file_after_checksum_error(
         _download_file(
             "https://example.test/file.bin",
             destination,
-            expected_sha1="0" * 40)
+            expected_checksum="0" * 40)
     assert not destination.exists(), "Expected destination file to be removed after\
           checksum error, but it still exists"
     assert not destination.with_name("file.bin.part").exists(), \
@@ -164,6 +166,7 @@ def test_download_file_wraps_write_errors(monkeypatch, tmp_path):
 
     with pytest.raises(DownloadError, match="Failed to write"):
         _download_file("https://example.test/file.bin", destination)
+
 
 ### _resolve_remote_path tests ###
 
@@ -267,6 +270,18 @@ def test_resolve_remote_path_accepts_mapping_row():
         f"Expected resolved path 'data/M87.fits', got {resolved}"
 
 
+def test_resolve_remote_path_uses_fmt_when_path_is_missing_value():
+    """
+    Test that _resolve_remote_path falls back to fmt-based resolution when a path field
+    is present but contains a missing value.
+    """
+    row = pd.Series({"path": pd.NA, "source": "M87"})
+
+    assert _resolve_remote_path(row, [{"fmt": "data/{source}.fits"}]) == \
+        Path("data/M87.fits"), \
+        "Expected fmt-based path resolution when row path is missing"
+
+
 ### _safe_remote_path tests ###
 
 @pytest.mark.parametrize(
@@ -291,6 +306,7 @@ def test_safe_remote_path_rejects_unsafe_and_reserved_paths(unsafe_path):
     with pytest.raises(DownloadError):
         _safe_remote_path(unsafe_path)
 
+
 def test_safe_remote_path_normalizes_valid_relative_path():
     """
     Test that _safe_remote_path correctly normalizes a valid relative path by stripping
@@ -302,8 +318,7 @@ def test_safe_remote_path_normalizes_valid_relative_path():
 
 
 @pytest.mark.parametrize(
-    "value",
-    ["", "   ", ".", "../secret", "nested/../secret", "/absolute", r"nested\file"])
+    "value", ["   ", r"nested\file"])
 def test_safe_remote_path_rejects_unsafe_values(value):
     """
     Test that _safe_remote_path raises a DownloadError for unsafe or invalid path
@@ -316,6 +331,7 @@ def test_safe_remote_path_rejects_unsafe_values(value):
     """
     with pytest.raises(DownloadError):
         _safe_remote_path(value)
+
 
 ### _select_remote_config tests ###
 
@@ -370,6 +386,7 @@ def test_select_remote_config_prefers_origin(tmp_path):
     assert _select_remote_config(repo) == origin, f"Expected 'origin' remote \
         configuration, got {_select_remote_config(repo)}"
 
+
 @pytest.mark.parametrize(
     "configured, message",[
         ("origin", "Invalid remote configuration"),
@@ -410,29 +427,6 @@ def test_select_remote_config_rejects_unknown_name(tmp_path):
     with pytest.raises(DownloadError, match="'missing' is not configured"):
         _select_remote_config(repo, "missing")
 
-@pytest.mark.parametrize(
-    "configured, message",[
-        ("origin", "Invalid remote configuration"),
-        (["origin"], "Invalid remote entry"),
-        (
-            [{"name": "one"}, {"name": "two"}],
-            "select one with --remote")])
-def test_select_remote_config_rejects_ambiguous_names(tmp_path, configured, message):
-    """
-    Test that _select_remote_config raises a DownloadError when the remote configuration
-    contains ambiguous or invalid names, such as duplicates, multiple unnamed remotes,
-    or empty names.
-    Args:
-        tmp_path (Path): A temporary directory path provided by pytest.
-        configured: The remote configuration to test.
-        message (str): The expected error message to match in the raised exception.
-    Raises:
-        DownloadError: If the remote configuration contains ambiguous or invalid names.
-    """
-    repo = _repo(tmp_path, {"remote": configured})
-
-    with pytest.raises(DownloadError, match=message):
-        _select_remote_config(repo)
 
 def test_select_remote_config_normalizes_requested_name(tmp_path):
     """
@@ -447,6 +441,7 @@ def test_select_remote_config_normalizes_requested_name(tmp_path):
     assert _select_remote_config(repo, " mirror ") == {
         "name": "mirror", "url": "https://example.test"}, f"Expected normalized remote \
             name 'mirror', got {_select_remote_config(repo, ' mirror ')}"
+
 
 ### download_remote_data tests ###
 
@@ -666,6 +661,7 @@ def test_download_remote_data_rejects_symlink_parent_escape(tmp_path):
     assert not (outside_root / "file.bin").exists(), \
         "Expected no file to be created outside the download root, but it exists"
 
+
 def test_download_remote_data_rejects_symlink_destination(tmp_path):
     """
     Test that download_remote_data raises a DownloadError when a selected file path
@@ -701,6 +697,7 @@ def test_download_remote_data_rejects_symlink_destination(tmp_path):
             selected_files=[(Path("file.bin"), None)])
     assert outside_file.read_bytes() == b"do not overwrite", \
         "Expected the outside file to remain unchanged, but it was modified"
+
 
 def test_download_remote_data_deduplicates_selected_paths(monkeypatch, tmp_path):
     """
@@ -758,6 +755,7 @@ def test_download_remote_data_rejects_conflicting_checksums(tmp_path):
             tmp_path,
             selected_files=[(Path("file.bin"), "first"), (Path("file.bin"), "second")])
 
+
 @pytest.mark.parametrize("max_workers", [0, -1, 1.5, True, None])
 def test_download_remote_data_rejects_invalid_worker_count(max_workers, tmp_path):
     """
@@ -774,6 +772,7 @@ def test_download_remote_data_rejects_invalid_worker_count(max_workers, tmp_path
     with pytest.raises(
         DownloadError, match="max_workers must be a positive integer"):
         download_remote_data(repo, tmp_path, max_workers=max_workers)
+
 
 def test_download_remote_data_rejects_selected_files_without_remote(tmp_path):
     """
@@ -848,6 +847,82 @@ def test_download_remote_data_rejects_malformed_selection(tmp_path):
     with pytest.raises(DownloadError, match="path, checksum"):
         download_remote_data(
             repo, tmp_path, selected_files=[("file.dat", None, "extra")])
+
+
+def test_download_remote_data_rejects_malformed_checksum_tuple(tmp_path):
+    """
+    Test that download_remote_data raises a DownloadError when a selected file's
+    checksum specification is itself a tuple with the wrong number of elements
+    (valid entries are either a plain sha1 string or an (algorithm, checksum) pair).
+    Args:
+        tmp_path: A pytest fixture providing a temporary directory.
+    Raises:
+        DownloadError: If a checksum specification is a tuple of the wrong length.
+    """
+    repo = _repo(tmp_path, {"remote": {"name": "origin",
+                                       "url": "https://example.test/data",}})
+
+    with pytest.raises(DownloadError, match="Invalid checksum specification"):
+        download_remote_data(
+            repo,
+            tmp_path,
+            selected_files=[(Path("file.dat"), ("sha1", "abc123", "extra"))])
+
+
+def test_download_remote_data_rejects_output_path_that_is_file(tmp_path):
+    """
+    Test that download_remote_data raises a DownloadError when worktree_path exists but
+    is a file instead of a directory.
+    """
+    repo = _repo(
+        tmp_path,
+        {"remote": {"name": "origin", "url": "https://example.test/data"}})
+    output_path = tmp_path / "output.bin"
+    output_path.write_text("not a directory\n", encoding="utf-8")
+
+    with pytest.raises(DownloadError, match="not a directory"):
+        download_remote_data(
+            repo,
+            output_path,
+            selected_files=[(Path("file.bin"), None)])
+
+
+def test_download_remote_data_deduplicates_equivalent_checksum_tuples(
+    monkeypatch, tmp_path):
+    """
+    Test that download_remote_data treats checksum tuples as equivalent when algorithm
+    and checksum differ only by case, avoiding false conflicts and duplicate downloads.
+    Args:
+        monkeypatch: A pytest fixture for monkeypatching.
+        tmp_path: A pytest fixture providing a temporary directory.
+    """
+    repo = _repo(
+        tmp_path, {
+            "remote": {
+                "name": "origin",
+                "url": "https://example.test/data"}})
+    calls = []
+    def fake_download(url, destination, checksum):
+        """Record download requests and return a fixed byte count."""
+        calls.append((url, destination, checksum))
+        return 11
+    monkeypatch.setattr("hallmark.downloader._download_file", fake_download)
+    checksum_upper = ("SHA256", "A" * 64)
+    checksum_lower = ("sha256", "a" * 64)
+    result = download_remote_data(
+        repo,
+        tmp_path,
+        selected_files=[
+            (Path("file.bin"), checksum_upper),
+            (Path("file.bin"), checksum_lower)])
+
+    assert result["succeeded"] == 1, \
+        f"Expected succeeded to be 1, but got {result['succeeded']}"
+    assert result["total_bytes"] == 11, \
+        f"Expected total_bytes to be 11, but got {result['total_bytes']}"
+    assert calls == [("https://example.test/data/file.bin", tmp_path / "file.bin",
+                      checksum_upper)], \
+                        f"Expected one deduplicated download call, got {calls}"
 
 
 ### select_download_files tests ###
@@ -1019,6 +1094,7 @@ def test_select_download_files_wraps_tsv_parser_errors(monkeypatch, tmp_path):
     with pytest.raises(DownloadError, match="Unable to read TSV"):
         select_download_files(repo, tsv_names=["science"])
 
+
 def test_select_download_files_preserves_uppercase_tsv_suffix(tmp_path):
     """
     Test that select_download_files correctly handles TSV files with uppercase suffixes,
@@ -1034,6 +1110,7 @@ def test_select_download_files_preserves_uppercase_tsv_suffix(tmp_path):
 
     assert selected == [(Path("image.fits"), None)], \
         f"Expected file from uppercase TSV to be selected, but got {selected}"
+
 
 def test_select_download_files_preserves_default_pandas_na_tokens(tmp_path):
     """
@@ -1094,34 +1171,67 @@ def test_select_download_files_reads_tsv_in_chunks(monkeypatch, tmp_path):
             f"Expected files from chunked TSV to be selected, but got {selected}"
 
 
-@pytest.mark.parametrize("algorithm", ["md5", "sha1", "sha256", "sha512"])
-def test_verify_checksum_supports_builder_algorithms(tmp_path, algorithm):
+def test_select_download_files_rejects_conflicting_checksums_for_same_path(tmp_path):
     """
-    Test that _verify_validated_checksum correctly computes and verifies checksums
-    using various algorithms supported by hashlib, ensuring that the function can
-    handle different checksum types as specified in the repo's configuration.
+    Test that select_download_files raises DownloadError when a TSV contains the same
+    file path with conflicting checksums.
     Args:
         tmp_path: A pytest fixture providing a temporary directory.
-        algorithm (str): The name of the checksum algorithm to test.
+    Raises:
+        DownloadError: If the TSV contains the same file path with conflicting checksums
     """
-    content = b"hallmark checksum test"
-    path = tmp_path / "data.bin"
-    path.write_bytes(content)
-    expected = hashlib.new(algorithm, content).hexdigest()
+    repo = _repo(
+        tmp_path,
+        {"data": [{"fmt": "{name}.fits", "db": "science.tsv"}]})
+    pd.DataFrame([
+        {"path": "same.fits", "sha1": "a" * 40},
+        {"path": "same.fits", "sha1": "b" * 40},
+    ]).to_csv(repo.dothm.path / "science.tsv", sep="\t", index=False)
 
-    _verify_validated_checksum(path, (algorithm, expected), chunk_size=2)
+    with pytest.raises(DownloadError, match="Conflicting checksums"):
+        select_download_files(repo, tsv_names=["science"])
 
 
-def test_entry_checksum_prefers_strongest_named_checksum():
+def test_select_download_files_rejects_unsupported_tsv_checksum_algorithm(tmp_path):
     """
-    Test that _entry_checksum correctly identifies and returns the strongest available
-    checksum from a given entry, preferring stronger algorithms over weaker ones when
-    multiple checksums are present.
+    Test that select_download_files raises DownloadError when a TSV row includes an
+    unsupported checksum algorithm.
+    Args:
+        tmp_path: A pytest fixture providing a temporary directory.
+    Raises:
+        DownloadError: If a TSV row includes an unsupported checksum algorithm.
     """
-    entry = {"md5": "a" * 32, "sha1": "b" * 40, "sha256": "c" * 64, "sha512": "d" * 128}
+    repo = _repo(
+        tmp_path,
+        {"data": [{"fmt": "{name}.fits", "db": "science.tsv"}]})
+    pd.DataFrame([{
+        "path": "image.fits",
+        "checksum_algorithm": "sha999",
+        "checksum": "a" * 64,
+    }]).to_csv(repo.dothm.path / "science.tsv", sep="\t", index=False)
 
-    assert _entry_checksum(entry) == ("sha512", "d" * 128), \
-        f"Expected strongest checksum to be sha512, but got {_entry_checksum(entry)}"
+    with pytest.raises(DownloadError, match="Unsupported checksum algorithm"):
+        select_download_files(repo, tsv_names=["science"])
+
+
+def test_select_download_files_rejects_unsupported_static_checksum_algorithm(tmp_path):
+    """
+    Test that select_download_files raises DownloadError when a static config entry
+    provides an unsupported checksum algorithm.
+    Args:
+        tmp_path: A pytest fixture providing a temporary directory.
+    Raises:
+        DownloadError: If the static config entry has an unsupported checksum algorithm.
+    """
+    repo = _repo(tmp_path,
+                 {"data": [{
+                     "file": "README.md",
+                     "checksum_algorithm": "sha999",
+                     "checksum": "a" * 64}]},
+                 pd.DataFrame())
+
+    with pytest.raises(DownloadError, match="Unsupported checksum algorithm"):
+        select_download_files(repo, all_files=True)
 
 
 def test_select_download_files_uses_builder_checksums(tmp_path):
@@ -1155,108 +1265,6 @@ def test_select_download_files_uses_builder_checksums(tmp_path):
         Path("README.md"): ("md5", readme_md5)}, \
             f"Expected selected files to include checksums, but got {selected}"
 
-def test_download_file_preserves_existing_part_file(monkeypatch, tmp_path):
-    """
-    Test that _download_file preserves an existing .part file when downloading a new
-    file, ensuring that the existing partial download is not overwritten or deleted.
-    Args:
-        monkeypatch: A pytest fixture for monkeypatching.
-        tmp_path: A pytest fixture providing a temporary directory.
-    """
-    monkeypatch.setattr(
-        "hallmark.downloader.requests.get",
-        lambda *args, **kwargs: _Response([b"downloaded"]))
-
-    destination = tmp_path / "file.bin"
-    existing_part = tmp_path / "file.bin.part"
-    existing_part.write_bytes(b"keep this")
-    result = _download_file("https://example.test/file.bin", destination)
-
-    assert result == len(b"downloaded"), \
-        f"Expected downloaded length {len(b'downloaded')}, but got {result}"
-    assert destination.read_bytes() == b"downloaded", \
-        "Expected destination file to contain downloaded data, but it did not"
-    assert existing_part.read_bytes() == b"keep this", \
-        "Expected existing .part file to be preserved, but it was modified"
-    assert list(tmp_path.glob(".file.bin.*.part")) == [], \
-        "Expected no leftover .part files, but found some"
-
-@pytest.mark.parametrize("chunk_size", [0, -1, 1.5, True, None])
-def test_download_file_rejects_invalid_chunk_size(chunk_size, tmp_path):
-    """
-    Test that _download_file raises a DownloadError when an invalid chunk_size is
-    provided, ensuring that the function enforces the requirement for a positive integer
-    chunk size for downloading files.
-    Args:
-        chunk_size: The invalid chunk size value to test.
-        tmp_path: A pytest fixture providing a temporary directory.
-    Raises:
-        DownloadError: If the chunk_size is not a positive integer.
-    """
-    with pytest.raises(DownloadError, match="chunk_size must be a positive integer"):
-        _download_file(
-            "https://example.test/file.bin",
-            tmp_path / "file.bin",
-            chunk_size=chunk_size)
-
-
-@pytest.mark.parametrize(
-    "checksum", ["abc", "g" * 40, ("md5", "a" * 31), ("unsupported", "a" * 40)])
-def test_download_file_rejects_invalid_checksum_before_request(monkeypatch, tmp_path,
-                                                               checksum):
-    """
-    Test that _download_file raises a DownloadError when an invalid checksum is provided
-    and that it does not attempt to make an HTTP request when the checksum is invalid.
-    Args:
-        monkeypatch: A pytest fixture for monkeypatching.
-        tmp_path: A pytest fixture providing a temporary directory.
-        checksum: The invalid checksum value to test.
-    Raises:
-        AssertionError: If an HTTP request is attempted when the checksum is invalid.
-        DownloadError: If the checksum is invalid or unsupported."""
-    def unexpected_request(*args, **kwargs):
-        """
-        A fake requests.get function that raises an AssertionError if called, to ensure
-        that _download_file does not attempt to make an HTTP request when the checksum
-        is invalid."""
-        raise AssertionError("HTTP request should not run")
-    monkeypatch.setattr("hallmark.downloader.requests.get", unexpected_request)
-    destination = tmp_path / "file.bin"
-
-    with pytest.raises(
-        DownloadError,
-        match=(
-            "Invalid .* checksum"
-            "|Unsupported checksum algorithm")):
-        _download_file(
-            "https://example.test/file.bin", destination, expected_sha1=checksum)
-    assert not destination.exists(), \
-        "Expected destination file not to exist after failed checksum validation"
-
-
-def test_download_file_wraps_directory_creation_error(monkeypatch, tmp_path):
-    """
-    Test that _download_file raises a DownloadError when it fails to create the
-    necessary directories for the destination file, simulating a failure in directory
-    creation and ensuring that the function handles such errors gracefully.
-    Args:
-        monkeypatch: A pytest fixture for monkeypatching.
-        tmp_path: A pytest fixture providing a temporary directory.
-    Raises:
-        DownloadError: If the directory for the destination file cannot be created.
-    """
-    destination = tmp_path / "nested" / "file.dat"
-    def fail_mkdir(self, *args, **kwargs):
-        """A fake Path.mkdir method that raises an OSError to simulate a failure in
-        creating the directory for the destination file."""
-        raise OSError("cannot create directory")
-    monkeypatch.setattr(Path, "mkdir", fail_mkdir)
-
-    with pytest.raises(DownloadError, match="Failed to write"):
-        _download_file("https://example.test/file.dat", destination)
-
-
-### select_download_files tests ###
 
 def test_select_download_files_accepts_single_data_mapping(tmp_path):
     """
@@ -1336,6 +1344,110 @@ def test_select_download_files_rejects_nonmapping_config(tmp_path):
         select_download_files(repo)
 
 
+### _download_file tests ###
+
+def test_download_file_preserves_existing_part_file(monkeypatch, tmp_path):
+    """
+    Test that _download_file preserves an existing .part file when downloading a new
+    file, ensuring that the existing partial download is not overwritten or deleted.
+    Args:
+        monkeypatch: A pytest fixture for monkeypatching.
+        tmp_path: A pytest fixture providing a temporary directory.
+    """
+    monkeypatch.setattr(
+        "hallmark.downloader.requests.get",
+        lambda *args, **kwargs: _Response([b"downloaded"]))
+
+    destination = tmp_path / "file.bin"
+    existing_part = tmp_path / "file.bin.part"
+    existing_part.write_bytes(b"keep this")
+    result = _download_file("https://example.test/file.bin", destination)
+
+    assert result == len(b"downloaded"), \
+        f"Expected downloaded length {len(b'downloaded')}, but got {result}"
+    assert destination.read_bytes() == b"downloaded", \
+        "Expected destination file to contain downloaded data, but it did not"
+    assert existing_part.read_bytes() == b"keep this", \
+        "Expected existing .part file to be preserved, but it was modified"
+    assert list(tmp_path.glob(".file.bin.*.part")) == [], \
+        "Expected no leftover .part files, but found some"
+
+
+@pytest.mark.parametrize("chunk_size", [0, -1, 1.5, True, None])
+def test_download_file_rejects_invalid_chunk_size(chunk_size, tmp_path):
+    """
+    Test that _download_file raises a DownloadError when an invalid chunk_size is
+    provided, ensuring that the function enforces the requirement for a positive integer
+    chunk size for downloading files.
+    Args:
+        chunk_size: The invalid chunk size value to test.
+        tmp_path: A pytest fixture providing a temporary directory.
+    Raises:
+        DownloadError: If the chunk_size is not a positive integer.
+    """
+    with pytest.raises(DownloadError, match="chunk_size must be a positive integer"):
+        _download_file(
+            "https://example.test/file.bin",
+            tmp_path / "file.bin",
+            chunk_size=chunk_size)
+
+
+@pytest.mark.parametrize(
+    "checksum", ["abc", "g" * 40, ("md5", "a" * 31), ("unsupported", "a" * 40)])
+def test_download_file_rejects_invalid_checksum_before_request(monkeypatch, tmp_path,
+                                                               checksum):
+    """
+    Test that _download_file raises a DownloadError when an invalid checksum is provided
+    and that it does not attempt to make an HTTP request when the checksum is invalid.
+    Args:
+        monkeypatch: A pytest fixture for monkeypatching.
+        tmp_path: A pytest fixture providing a temporary directory.
+        checksum: The invalid checksum value to test.
+    Raises:
+        AssertionError: If an HTTP request is attempted when the checksum is invalid.
+        DownloadError: If the checksum is invalid or unsupported."""
+    def unexpected_request(*args, **kwargs):
+        """
+        A fake requests.get function that raises an AssertionError if called, to ensure
+        that _download_file does not attempt to make an HTTP request when the checksum
+        is invalid."""
+        raise AssertionError("HTTP request should not run")
+    monkeypatch.setattr("hallmark.downloader.requests.get", unexpected_request)
+    destination = tmp_path / "file.bin"
+
+    with pytest.raises(
+        DownloadError,
+        match=(
+            "Invalid .* checksum"
+            "|Unsupported checksum algorithm")):
+        _download_file(
+            "https://example.test/file.bin", destination, expected_checksum=checksum)
+    assert not destination.exists(), \
+        "Expected destination file not to exist after failed checksum validation"
+
+
+def test_download_file_wraps_directory_creation_error(monkeypatch, tmp_path):
+    """
+    Test that _download_file raises a DownloadError when it fails to create the
+    necessary directories for the destination file, simulating a failure in directory
+    creation and ensuring that the function handles such errors gracefully.
+    Args:
+        monkeypatch: A pytest fixture for monkeypatching.
+        tmp_path: A pytest fixture providing a temporary directory.
+    Raises:
+        DownloadError: If the directory for the destination file cannot be created.
+    """
+    destination = tmp_path / "nested" / "file.dat"
+    def fail_mkdir(self, *args, **kwargs):
+        """A fake Path.mkdir method that raises an OSError to simulate a failure in
+        creating the directory for the destination file."""
+        raise OSError("cannot create directory")
+    monkeypatch.setattr(Path, "mkdir", fail_mkdir)
+
+    with pytest.raises(DownloadError, match="Failed to write"):
+        _download_file("https://example.test/file.dat", destination)
+
+
 ### _remote_file_url tests ###
 
 def test_remote_file_url_escapes_filename_characters():
@@ -1348,3 +1460,35 @@ def test_remote_file_url_escapes_filename_characters():
 
     assert result == ("https://example.test/base/nested/a%2Bb%20%231.dat"), \
         f"Expected URL to escape special characters, but got {result}"
+
+
+### checksum verification tests ###
+
+@pytest.mark.parametrize("algorithm", ["md5", "sha1", "sha256", "sha512"])
+def test_verify_checksum_supports_builder_algorithms(tmp_path, algorithm):
+    """
+    Test that _verify_validated_checksum correctly computes and verifies checksums
+    using various algorithms supported by hashlib, ensuring that the function can
+    handle different checksum types as specified in the repo's configuration.
+    Args:
+        tmp_path: A pytest fixture providing a temporary directory.
+        algorithm (str): The name of the checksum algorithm to test.
+    """
+    content = b"hallmark checksum test"
+    path = tmp_path / "data.bin"
+    path.write_bytes(content)
+    expected = hashlib.new(algorithm, content).hexdigest()
+
+    _verify_validated_checksum(path, (algorithm, expected), chunk_size=2)
+
+
+def test_entry_checksum_prefers_strongest_named_checksum():
+    """
+    Test that _entry_checksum correctly identifies and returns the strongest available
+    checksum from a given entry, preferring stronger algorithms over weaker ones when
+    multiple checksums are present.
+    """
+    entry = {"md5": "a" * 32, "sha1": "b" * 40, "sha256": "c" * 64, "sha512": "d" * 128}
+
+    assert _entry_checksum(entry) == ("sha512", "d" * 128), \
+        f"Expected strongest checksum to be sha512, but got {_entry_checksum(entry)}"

@@ -16,6 +16,7 @@ def _load_revision_yaml(
     fallback: dict,
     ) -> dict:
     """
+    Used by load_revision_state.
     Load a YAML file from a specific Git revision.
 
     Args:
@@ -41,6 +42,7 @@ def _load_revision_yaml(
 
 def _parse_data_tsv(data: str) -> pd.DataFrame:
     """
+    Used by load_revision_state.
     Parse Git-backed TSV text into a DataFrame.
 
     Args:
@@ -58,7 +60,9 @@ def _parse_data_tsv(data: str) -> pd.DataFrame:
 
 
 def _copy_current_state(repo, *, include_data: bool) -> State:
-    """Create an independent copy of the repository's current state.
+    """
+    Used by load_head_state and load_branch_data.
+    Create an independent copy of the repository's current state.
     Args:
         repo: The repository object.
         include_data: Whether to include the current data in the copied state.
@@ -76,6 +80,7 @@ def _copy_current_state(repo, *, include_data: bool) -> State:
 
 def _load_revision_state(repo, revision: str) -> State:
     """
+    Used by load_head_state and load_branch_data.
     Load the state from a specific Git revision.
 
     Args:
@@ -90,39 +95,9 @@ def _load_revision_state(repo, revision: str) -> State:
     # Load the config.yml and meta.yml content from the specified revision,
     # falling back to current state if not found
     return State(
-        config=load_branch_config(repo, revision),
-        meta=load_branch_meta(repo, revision),
+        config=_load_revision_yaml(repo, revision, "config.yml", repo.state.config),
+        meta=_load_revision_yaml(repo, revision, "meta.yml", repo.state.meta),
         data=_parse_data_tsv(data_text))
-
-
-def load_branch_config(repo, branch: str) -> dict:
-    '''
-    Load the configuration for a specific branch
-
-    Args:
-        repo (Repo): repository object containing Git and state information/
-        branch (String): Name of the branch whose configuration should be loaded
-    Returns:
-        Result from ``_load_revision_yaml``, which is a dictionary containing the
-        contents of ``config.yml`` from the specified branch. If the configuration
-        can't be loaded, returns ``repo.state.config``.
-    '''
-    return _load_revision_yaml(repo, branch, "config.yml", repo.state.config)
-
-
-def load_branch_meta(repo, branch: str) -> dict:
-    '''
-    Load the metadata for a specific branch
-
-    Args:
-        repo (Repo): repository object
-        branch (String): Name of the branch
-    Returns:
-        Result from ``_load_revision_yaml``, which is a dictionary containing the
-        contents of ``meta.yml`` from the specified branch. If the metadata
-        can't be loaded, returns ``repo.state.meta``.
-    '''
-    return _load_revision_yaml(repo, branch, "meta.yml", repo.state.meta)
 
 
 def load_branch_data(repo, branch: str) -> State:

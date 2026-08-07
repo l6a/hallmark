@@ -3,11 +3,9 @@ from __future__ import annotations
 from pathlib import Path
 
 from .error import CheckoutError
-from .repo_config import (
-    branch_fmt,
-    resolve_contained_path,
-    validate_relative_path,
-    SymlinkPathError)
+from .helper_functions import (
+    SymlinkPathError, resolve_contained_path, validate_relative_path)
+from .repo_config import branch_fmt
 from .repo_manifest import manifest_map, iter_manifest_entries
 
 
@@ -79,7 +77,6 @@ def filtered_paraframe(repo, pf):
     return pf[pf["path"].map(is_within_root)]
 
 
-
 def tracked_paths(repo) -> set[Path]:
     '''
     Return the set of tracked file paths.
@@ -95,6 +92,7 @@ def tracked_paths(repo) -> set[Path]:
     fmt = branch_fmt(repo)
     # use iter_manifest_entries to iterate over the manifest entries and collect paths
     return {path for path, _ in iter_manifest_entries(repo.state, fmt=fmt)}
+
 
 def worktree_changes(repo, expected_checksums: dict[str, str]
                      ) -> tuple[list[str], list[str]]:
@@ -152,6 +150,7 @@ def worktree_changes(repo, expected_checksums: dict[str, str]
         if actual_checksums[full_path] != expected_sha1]
 
     return modified, missing
+
 
 def ensure_clean_tracked_files(repo) -> None:
     '''

@@ -17,16 +17,17 @@ from .helper_functions import (
     CHECKSUM_ALGORITHMS_BY_STRENGTH,
     REMOTE_REQUEST_TIMEOUT,
     SUPPORTED_CHECKSUM_ALGORITHMS,
+    as_list_of_dicts,
     atomic_output_path,
     file_checksum,
     normalize_nonempty_string,
-    valid_checksum)
+    resolve_contained_path,
+    valid_checksum,
+    validate_relative_path)
 from .repo_config import (
     normalize_remotes,
     normalize_tsv_name,
-    resolve_contained_path,
-    row_to_path,
-    validate_relative_path)
+    row_to_path)
 
 # Maximum number of files to download before showing a warning message.
 BULK_DOWNLOAD_WARNING_FILE_COUNT = 100
@@ -46,6 +47,7 @@ class DownloadError(HallmarkError):
 
 def _repository_config(repo) -> dict:
     """
+    Used by _select_remote_config and select_download_files.
     Return repository configuration as a dictionary.
 
     Args:
@@ -68,16 +70,38 @@ def _repository_config(repo) -> dict:
     return config
 
 
+def _config_section_entries(config: dict, section_name: str) -> list[dict]:
+    """
+    Used by select_download_files.
+    Return the dict entries of a config section (e.g. "data" or "meta"), silently
+    dropping any entries that aren't mappings.
+
+    Args:
+        config: The repository configuration dictionary.
+        section_name: The top-level config key to read.
+
+    Returns:
+        A list of dict entries for the section, or [] if the section is missing or
+        not a mapping/list.
+    """
+    entries = as_list_of_dicts(config.get(section_name))
+    if entries is None:
+        return []
+    return [entry for entry in entries if isinstance(entry, dict)]
+
+
 def _initialize_download_worker() -> None:
     """
+    Used by download_remote_data.
     Create one reusable HTTP session for each downloader thread.
     This function is called once per thread in the ThreadPoolExecutor.
     """
     _DOWNLOAD_WORKER_STATE.session = requests.Session()
 
+
 def _require_positive_integer(value, *, label: str) -> int:
     """
-    Used by download_remote_data, _download_file, and _verify_checksum.
+    Used by download_remote_data and _download_file.
     Validate that a value is a positive, non-boolean integer.
 
     Args:
@@ -161,7 +185,7 @@ def _checksum_spec(value, algorithm=None) -> Optional[ChecksumSpec]:
 def _row_checksum(row: Union[pd.Series, Mapping[str, object]]
                   ) -> Optional[ChecksumSpec]:
     """
-    Used by select_download_files/add_frame.
+    Used by add_frame.
     Extract the checksum specification from a DataFrame row.
 
     Args:
@@ -181,7 +205,7 @@ def _row_checksum(row: Union[pd.Series, Mapping[str, object]]
 
 def _entry_checksum(entry: dict) -> Optional[ChecksumSpec]:
     """
-    Used by select_download_files/add_frame.
+    Used by select_download_files.
     Extract either legacy or builder checksum metadata from a config entry.
 
     Args:
@@ -205,10 +229,11 @@ def _entry_checksum(entry: dict) -> Optional[ChecksumSpec]:
     # if no valid checksum is found, return the result of _checksum_spec
     return _checksum_spec(entry.get("checksum"), entry.get("checksum_algorithm"))
 
+
 def _checksum_identity(expected_checksum: Optional[ChecksumSpec]
                        ) -> Optional[tuple[str, str]]:
     """
-    Used by _merge_selected_file.
+    Used by _validate_checksum_spec and _merge_selected_file.
     Normalize a checksum specification into a tuple of (algorithm, checksum).
 
     Args:
@@ -236,9 +261,11 @@ def _checksum_identity(expected_checksum: Optional[ChecksumSpec]
     # return a tuple of (algorithm, checksum) with both values normalized to lowercase
     return (str(algorithm).strip().lower(), str(checksum).strip().lower())
 
+
 def _validate_checksum_spec(expected_checksum: Optional[ChecksumSpec]
                             ) -> Optional[tuple[str, str]]:
     """
+    Used by _download_file.
     Validate and normalize a checksum specification.
 
     Args:
@@ -267,12 +294,14 @@ def _validate_checksum_spec(expected_checksum: Optional[ChecksumSpec]
 
     return algorithm, checksum
 
+
 def _merge_selected_file(
     selected: dict[str, tuple[Path, Optional[ChecksumSpec]]],
     relative_path: Path,
     expected_checksum: Optional[ChecksumSpec]
     ) -> None:
     """
+    Used by add_file and download_remote_data.
     Merge a selected file into the dictionary of selected files, ensuring no
     conflicting checksums exist.
 
@@ -362,6 +391,7 @@ def _remote_file_url(remote_url: str, relative_path: Path) -> str:
 
 def _download_tsv_name(value) -> str:
     """
+    Used by select_download_files.
     Normalize a TSV name and expose validation failures as DownloadError.
 
     Args:
@@ -451,167 +481,12 @@ def _select_remote_config(repo, remote_name: Optional[str] = None) -> Optional[d
         f"({', '.join(names)}); select one with --remote")
 
 
-def select_download_files(
-    repo,
-    file_paths: Sequence[str] = (),
-    tsv_names: Sequence[str] = (),
-    all_files: bool = False,
-    ) -> list[tuple[Path, Optional[ChecksumSpec]]]:
-    """
-    Select files to download from a hallmark repository based on the provided
-    file paths, TSV names, and the repository's configuration.
-
-    Args:
-        repo: The hallmark repository object.
-        file_paths: A sequence of specific file paths to download.
-        tsv_names: A sequence of TSV names to download files from.
-        all_files: If True, include all files from the repository's configuration.
-
-    Returns:
-        A list of tuples containing the relative path and optional checksum
-        specification for each selected file.
-    """
-    # Get the repository configuration, defaulting to an empty dictionary if not found.
-    config = _repository_config(repo)
-
-    # Define a helper function to extract entries from a specific section of the config.
-    def section_entries(section_name: str) -> list[dict]:
-        # get the entries for the specified section from the config
-        entries = config.get(section_name)
-        # if the entries are None, return an empty list to indicate no entries found
-        if isinstance(entries, dict):
-            return [entries]
-        # if the entries are a list, filter out any entries that are not dictionaries
-        if isinstance(entries, list):
-            return [entry for entry in entries if isinstance(entry, dict)]
-        # if the entries are neither a dict nor a list, return an empty list
-        return []
-
-    # get the data configuration entries from the "data" section of the config
-    data_config = section_entries("data")
-    # dictionary to store selected files with relative paths and optional checksums.
-    selected: dict[str, tuple[Path, Optional[ChecksumSpec]]] = {}
-
-    def add_file(
-            value: Union[str, Path],
-            expected_checksum: Optional[ChecksumSpec] = None
-            ) -> None:
-        """Add file to the selected files dictionary, ensuring it is safe and valid."""
-        # Resolve the input value to a safe relative path
-        relative_path = _safe_remote_path(value)
-        # Merge the selected file into the dictionary of selected files, ensuring no
-        # conflicting checksums exist.
-        _merge_selected_file(selected, relative_path, expected_checksum)
-
-    def add_frame(frame: pd.DataFrame, fmt_entries: list[dict]) -> None:
-        """ Add every file represented by a manifest DataFrame."""
-        # if the DataFrame is None or empty, return early without adding any files
-        if frame is None or frame.empty:
-            return
-        # get the column names from the DataFrame to use for creating dictionaries
-        columns = tuple(frame.columns)
-        # for each value in the DataFrame
-        for values in frame.itertuples(index=False, name=None):
-            # create a dictionary mapping column names to their corresponding values
-            row = dict(zip(columns, values))
-            # add the resolved remote path and its checksum to the selected files
-            add_file(
-                _resolve_remote_path(row, fmt_entries), _row_checksum(row))
-
-    # Add explicitly requested file paths to the selected files.
-    for file_path in file_paths:
-        add_file(file_path)
-    # Organize data configuration entries by their database names for easier access.
-    entries_by_db: dict[str, list[dict]] = {}
-    for entry in data_config:
-        # Skip entries that do not have both "fmt" and "db" keys
-        if not entry.get("fmt") or not entry.get("db"):
-            continue
-        # download_tsv_name will normalize and validate the TSV name
-        db_name = _download_tsv_name(entry["db"])
-        # Add the entry to the list of entries for the corresponding database name
-        entries_by_db.setdefault(db_name, []).append(entry)
-
-
-    requested_tsvs = []
-    seen_tsvs = set()
-    for name in tsv_names:
-        # download_tsv_name will normalize and validate the TSV name
-        db_name = _download_tsv_name(name)
-        # if the TSV name has not been seen before, add it to requested list and seen
-        if db_name not in seen_tsvs:
-            requested_tsvs.append(db_name)
-            seen_tsvs.add(db_name)
-
-    # if the all_files flag is set, include all TSVs in the requested list and seen set
-    if all_files:
-        for db_name in entries_by_db:
-            if db_name not in seen_tsvs:
-                requested_tsvs.append(db_name)
-                seen_tsvs.add(db_name)
-
-    for db_name in requested_tsvs:
-        fmt_entries = entries_by_db.get(db_name)
-        # if there are no format entries for the requested TSV
-        if fmt_entries is None:
-            configured = ", ".join(entries_by_db) or "<none>"
-            # raise an error indicating that the TSV is not configured in the repository
-            raise DownloadError(
-                f"TSV {db_name!r} is not configured. "
-                f"Configured TSVs: {configured}")
-
-        # Construct the path to the TSV file in the repository's dothm directory.
-        tsv_path = repo.dothm.path / db_name
-        # if the TSV file does not exist at the constructed path, raise an error
-        if not tsv_path.is_file():
-            raise DownloadError(f"Configured TSV does not exist: {tsv_path}")
-        # try to read the TSV file in chunks and add its entries to the selected files
-        try:
-            frames = pd.read_csv(
-                tsv_path,
-                sep="\t",
-                dtype=str,
-                keep_default_na=False,
-                chunksize=TSV_READ_CHUNK_SIZE)
-            for frame in frames:
-                add_frame(frame, fmt_entries)
-        # skip empty TSV files without raising an error
-        except pd.errors.EmptyDataError:
-            continue
-        # raise a DownloadError if there is an issue reading the TSV file
-        except (OSError, UnicodeError, pd.errors.ParserError) as exc:
-            raise DownloadError(f"Unable to read TSV {tsv_path}: {exc}") from exc
-
-    if all_files:
-        # for each section ("data" and "meta") in the repository configuration
-        for section_name in ("data", "meta"):
-            # iterate through each entry in the section
-            for entry in section_entries(section_name):
-                # get the file path from the entry, if it exists
-                file_path = entry.get("file")
-                # if a file path is specified in the entry, add it to the selected files
-                if file_path:
-                    add_file(file_path, _entry_checksum(entry))
-
-    # Determine whether to use legacy data formats based on the presence of file paths,
-    # TSV names, and all_files flag.
-    use_legacy_data = (not file_paths and not tsv_names and not all_files
-                        ) or (all_files and not entries_by_db)
-    if use_legacy_data:
-        # legacy_formats are entries in the data configuration that have a "fmt" key
-        legacy_formats = [entry for entry in data_config if entry.get("fmt")]
-        # add files from legacy formats to the selected files
-        add_frame(repo.state.data, legacy_formats)
-
-    return list(selected.values())
-
-
 def _resolve_remote_path(
         row: Union[pd.Series, Mapping[str, object]],
         data_config: list[dict]
         ) -> Path:
     """
-    Used by select_download_files/add_frame.
+    Used by add_frame.
     Resolve the remote path for a given row in a DataFrame based on the repository's
     data configuration.
 
@@ -662,6 +537,7 @@ def _verify_validated_checksum(
     chunk_size: int,
     ) -> None:
     """
+    Used by _download_file.
     Verify a checksum that has already been normalized.
 
     Args:
@@ -687,7 +563,7 @@ def _verify_validated_checksum(
 def _download_file(
     url: str,
     destination: Path,
-    expected_sha1: Optional[ChecksumSpec] = None,
+    expected_checksum: Optional[ChecksumSpec] = None,
     chunk_size: int = DOWNLOAD_CHUNK_SIZE,
     ) -> int:
     """
@@ -697,7 +573,7 @@ def _download_file(
     Args:
         url: The URL of the file to download.
         destination: The path where the downloaded file will be saved.
-        expected_sha1: The expected checksum of the file. Can be a tuple of
+        expected_checksum: The expected checksum of the file. Can be a tuple of
         (algorithm, checksum) or a legacy SHA-1 checksum.
         chunk_size: The size of chunks to read the file in.
 
@@ -710,7 +586,7 @@ def _download_file(
     # Ensure that the chunk size is a positive integer for reading the file in chunks.
     chunk_size = _require_positive_integer(chunk_size, label="chunk_size")
     # Validate and normalize the expected checksum specification
-    validated_checksum = _validate_checksum_spec(expected_sha1)
+    validated_checksum = _validate_checksum_spec(expected_checksum)
 
     # try to download the file from the specified URL and write it to the temporary file
     try:
@@ -744,6 +620,149 @@ def _download_file(
         raise DownloadError(f"Failed to download {url}: {exc}") from exc
     except OSError as exc:
         raise DownloadError(f"Failed to write {destination}: {exc}") from exc
+
+
+def select_download_files(
+    repo,
+    file_paths: Sequence[str] = (),
+    tsv_names: Sequence[str] = (),
+    all_files: bool = False,
+    ) -> list[tuple[Path, Optional[ChecksumSpec]]]:
+    """
+    Select files to download from a hallmark repository based on the provided
+    file paths, TSV names, and the repository's configuration.
+
+    Args:
+        repo: The hallmark repository object.
+        file_paths: A sequence of specific file paths to download.
+        tsv_names: A sequence of TSV names to download files from.
+        all_files: If True, include all files from the repository's configuration.
+
+    Returns:
+        A list of tuples containing the relative path and optional checksum
+        specification for each selected file.
+    """
+    # Get the repository configuration, defaulting to an empty dictionary if not found.
+    config = _repository_config(repo)
+
+    # get the data configuration entries from the "data" section of the config
+    data_config = _config_section_entries(config, "data")
+    # dictionary to store selected files with relative paths and optional checksums.
+    selected: dict[str, tuple[Path, Optional[ChecksumSpec]]] = {}
+
+    def add_file(
+            value: Union[str, Path],
+            expected_checksum: Optional[ChecksumSpec] = None
+            ) -> None:
+        """Add file to the selected files dictionary, ensuring it is safe and valid."""
+        # Resolve the input value to a safe relative path
+        relative_path = _safe_remote_path(value)
+        # Merge the selected file into the dictionary of selected files, ensuring no
+        # conflicting checksums exist.
+        _merge_selected_file(selected, relative_path, expected_checksum)
+
+    def add_frame(frame: pd.DataFrame, fmt_entries: list[dict]) -> None:
+        """ Add every file represented by a manifest DataFrame."""
+        # if the DataFrame is None or empty, return early without adding any files
+        if frame is None or frame.empty:
+            return
+        # get the column names from the DataFrame to use for creating dictionaries
+        columns = tuple(frame.columns)
+        # for each value in the DataFrame
+        for values in frame.itertuples(index=False, name=None):
+            # create a dictionary mapping column names to their corresponding values
+            row = dict(zip(columns, values))
+            # add the resolved remote path and its checksum to the selected files
+            add_file(
+                _resolve_remote_path(row, fmt_entries), _row_checksum(row))
+
+    # Add explicitly requested file paths to the selected files.
+    for file_path in file_paths:
+        add_file(file_path)
+    # Organize data configuration entries by their TSV names for easier access.
+    entries_by_tsv: dict[str, list[dict]] = {}
+    for entry in data_config:
+        # Skip entries that do not have both "fmt" and "db" keys
+        if not entry.get("fmt") or not entry.get("db"):
+            continue
+        # download_tsv_name will normalize and validate the TSV name
+        tsv_name = _download_tsv_name(entry["db"])
+        # Add the entry to the list of entries for the corresponding TSV name
+        entries_by_tsv.setdefault(tsv_name, []).append(entry)
+
+
+    requested_tsvs = []
+    seen_tsvs = set()
+    for name in tsv_names:
+        # download_tsv_name will normalize and validate the TSV name
+        tsv_name = _download_tsv_name(name)
+        # if the TSV name has not been seen before, add it to requested list and seen
+        if tsv_name not in seen_tsvs:
+            requested_tsvs.append(tsv_name)
+            seen_tsvs.add(tsv_name)
+
+    # if the all_files flag is set, include all TSVs in the requested list and seen set
+    if all_files:
+        for tsv_name in entries_by_tsv:
+            if tsv_name not in seen_tsvs:
+                requested_tsvs.append(tsv_name)
+                seen_tsvs.add(tsv_name)
+
+    for tsv_name in requested_tsvs:
+        fmt_entries = entries_by_tsv.get(tsv_name)
+        # if there are no format entries for the requested TSV
+        if fmt_entries is None:
+            configured = ", ".join(entries_by_tsv) or "<none>"
+            # raise an error indicating that the TSV is not configured in the repository
+            raise DownloadError(
+                f"TSV {tsv_name!r} is not configured. "
+                f"Configured TSVs: {configured}")
+
+        # Construct the path to the TSV file in the repository's dothm directory.
+        tsv_path = repo.dothm.path / tsv_name
+        # if the TSV file does not exist at the constructed path, raise an error
+        if not tsv_path.is_file():
+            raise DownloadError(f"Configured TSV does not exist: {tsv_path}")
+        # try to read the TSV file in chunks and add its entries to the selected files
+        try:
+            frames = pd.read_csv(
+                tsv_path,
+                sep="\t",
+                dtype=str,
+                keep_default_na=False,
+                chunksize=TSV_READ_CHUNK_SIZE)
+            for frame in frames:
+                add_frame(frame, fmt_entries)
+        # skip empty TSV files without raising an error
+        except pd.errors.EmptyDataError:
+            continue
+        # raise a DownloadError if there is an issue reading the TSV file
+        except (OSError, UnicodeError, pd.errors.ParserError) as exc:
+            raise DownloadError(f"Unable to read TSV {tsv_path}: {exc}") from exc
+
+    if all_files:
+        # for each section ("data" and "meta") in the repository configuration
+        for section_name in ("data", "meta"):
+            # iterate through each entry in the section
+            for entry in _config_section_entries(config, section_name):
+                # get the file path from the entry, if it exists
+                file_path = entry.get("file")
+                # if a file path is specified in the entry, add it to the selected files
+                if file_path:
+                    add_file(file_path, _entry_checksum(entry))
+
+    # Determine whether to use legacy data formats based on the presence of file paths,
+    # TSV names, and all_files flag.
+    use_legacy_data = (not file_paths and not tsv_names and not all_files
+                        ) or (all_files and not entries_by_tsv)
+    if use_legacy_data:
+        # legacy_formats are entries in the data configuration that have a "fmt" key
+        legacy_formats = [entry for entry in data_config if entry.get("fmt")]
+        # add files from legacy formats to the selected files
+        add_frame(repo.state.data, legacy_formats)
+
+    return list(selected.values())
+
 
 def download_remote_data(
     repo,

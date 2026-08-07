@@ -19,7 +19,7 @@ import os
 import tempfile
 import yaml
 from contextlib import contextmanager
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 import pandas as pd
 
 # map checksum algorithms to their expected lengths in hexadecimal characters.
@@ -42,6 +42,54 @@ REPOSITORY_INTERNAL_NAMES = frozenset({".git", ".hm"})
 FILE_IO_CHUNK_SIZE = 1024 * 1024
 
 
+class SymlinkPathError(ValueError):
+    """Raised when a contained path crosses a symbolic link."""
+
+
+def as_list_of_dicts(value) -> list | None:
+    """
+    Used in downloader by _config_section_entries
+    and repo_config by fmt_entries_from_config.
+    Coerce a config value into list form: a dict becomes a single-item list, and a
+    list is returned as-is (unfiltered, elements not checked). Returns None if value
+    is neither a dict nor a list.
+
+    Args:
+        value: The value to coerce.
+
+    Returns:
+        A list if value was a dict or list, otherwise None.
+    """
+    if isinstance(value, dict):
+        return [value]
+    if isinstance(value, list):
+        return value
+    return None
+
+
+def safe_str(value) -> str | None:
+    """
+    Used in repo_manifest by manifest_frame_from_pf.
+    Convert a value to string, handling None and NaN values.
+
+    Args:
+        value: The value to convert.
+
+    Returns:
+        The string representation of the value, or None if the value is None or NaN.
+    """
+    if value is None:
+        return None
+    # if the value is a scalar and is NaN, return None
+    if pd.api.types.is_scalar(value) and pd.isna(value):
+        return None
+    # if the value is a float and is an integer, return it as an integer string
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    # otherwise, return the string representation of the value
+    return str(value)
+
+
 def valid_checksum(
     algorithm: str,
     checksum: str,
@@ -49,6 +97,8 @@ def valid_checksum(
     allow_unknown_algorithm: bool = False,
     ) -> bool:
     """
+    Used in downloader by validate_checksum_spec, objects by _normalize_sha1,
+    and repo_builder by _manifest_matches
     Validate a checksum against its expected length for the given algorithm.
 
     Args:
@@ -85,6 +135,7 @@ def file_checksum(
     chunk_size: int = FILE_IO_CHUNK_SIZE,
     ) -> str:
     """
+    Used in objects by _verify_validated_checksum and objects by _calculate_sha1.
     Compute a file checksum using streaming reads.
 
     Uses hashlib.file_digest when available and retains compatibility
@@ -117,10 +168,29 @@ def file_checksum(
         return digest.hexdigest()
 
 
+@contextmanager
+def chdir(path):
+    '''
+    Used in repo by add.
+    Temporarily change the working directory within a context.
+
+    Args:
+        Path: Directory to switch to while inside the context.
+    '''
+    old = os.getcwd()
+    os.chdir(path)
+    try:
+        yield
+    finally:
+        os.chdir(old)
+
+
 # use contextmanager to create a temporary file path for atomic writes
 @contextmanager
 def atomic_output_path(path: Path, *, suffix: str = ".tmp"):
     """
+    Used in dothm by dump_yml and dump_tsv, downloader by _download_file,
+    objects by _copy_atomically, and repo_builder by build_repo.
     Context manager that yields a temporary file path for atomic writes.
     The temporary file is created in the same directory as the target path
     and is replaced with the target path upon successful completion.
@@ -154,6 +224,7 @@ def atomic_output_path(path: Path, *, suffix: str = ".tmp"):
 
 def load_yaml(source):
     """
+    Used in repo_state by _load_revision_yaml.
     Load YAML from text or a readable stream.
     Empty YAML documents are represented consistently as an empty
     dictionary.
@@ -178,6 +249,7 @@ def load_yaml(source):
 
 def load_yaml_file(path: Path):
     """
+    Used in dothm by load_yml and repo_builder by build_repo.
     Load YAML from a file, returning an empty dictionary for empty files.
 
     Args:
@@ -197,6 +269,9 @@ def normalize_nonempty_string(
     exception_type=ValueError
     ) -> str:
     """
+    Used in downloader by _select_download_files and download_remote_data, repo by
+    _validate_branch_name, add, and commit, repo_config by normalize_remotes,
+    branch_fmt, and set_config.
     Normalize a string by stripping whitespace and ensuring it is non-empty.
 
     Args:
@@ -216,6 +291,7 @@ def normalize_nonempty_string(
 
 def iter_repository_files(root: Path):
     """
+    Used in fmt_detection by scan_inventory and repo by status.
     Iterate over all files in a repository, excluding internal directories.
 
     Args:
@@ -246,7 +322,9 @@ def iter_repository_files(root: Path):
 
 
 def find_spec_by_fmt(fmt, encodings):
-    """Find the encoding spec for a given format string.
+    """
+    Used in paraframe by _resolve_encoding_spec.
+    Find the encoding spec for a given format string.
 
     Args:
         fmt:       Format string to look up.
@@ -263,7 +341,9 @@ def find_spec_by_fmt(fmt, encodings):
 
 
 def regex_sub(value, yaml_encodings):
-    """Apply regex substitution defined in an encoding spec.
+    """
+    Used in paraframe by parse.
+    Apply regex substitution defined in an encoding spec.
 
     Args:
         value:          Format string / file path to transform.
@@ -288,8 +368,10 @@ def regex_sub(value, yaml_encodings):
     # replacing matches with a hyphen followed by the first captured group.
     return re.sub(regex, lambda match: "-" + str(match.group(1)), value)
 
+
 def try_numeric_conversion(series):
     """
+    Used in paraframe by parse.
     Attempt to convert a pandas Series to numeric.
 
     Converts the series to numeric iff:
@@ -318,3 +400,184 @@ def try_numeric_conversion(series):
         return series
     return converted
 
+
+def prompt_choice(prompt: str, choices: set[str]) -> str:
+    """
+    Used in repo_builder by build_repo.
+    Prompt the user to make a choice from a set of valid options.
+
+    Args:
+        prompt: The prompt message to display to the user.
+        choices: A set of valid choices (case-insensitive).
+
+    Returns:
+        The user's choice as a lowercase string.
+
+    Raises:
+        ValueError: If the user's choice is not in the set of valid choices.
+    """
+    choice = input(prompt).strip().lower()
+    # if the user's choice is not in the set of valid choices, raise a ValueError
+    if choice not in choices:
+        raise ValueError(f"Unrecognized choice: {choice!r}")
+    return choice
+
+
+def coerce_fmt_value(value: str, spec: str):
+    """
+    Used in repo_config by row_to_path
+    Convert a value according to a format specification.
+
+    Args:
+        value (str): Value to convert.
+        spec (str): Format specification.
+
+    Returns:
+        The converted value.
+    """
+    if not spec:
+        return value
+    if spec.endswith("d"):
+        return int(float(value))
+    if spec[-1] in {"f", "F", "g", "G", "e", "E"}:
+        return float(value)
+    return value
+
+
+def validate_relative_path(value, *, label: str = "path") -> Path:
+    """
+    Used in downloader by _safe_remote_path, repo_builder by _resolve_manifest_path
+    and _normalize_index_href, repo_config by row_to_path,
+    and repo_worktree by is_within_root.
+    Validate that a given path is a safe relative path.
+
+    Args:
+        value: The path to validate.
+        label (str): Label for error messages.
+
+    Returns:
+        Path: The validated relative path.
+
+    Raises:
+        ValueError: If the path is empty, absolute, traverses through a
+            parent directory, uses Windows separators, or targets repository metadata.
+    """
+    # raw path is the string representation of the input value
+    raw_path = str(value)
+    # check if the raw path is empty or just a dot (current directory)
+    if not raw_path or raw_path == ".":
+        raise ValueError(f"{label} cannot be empty")
+    # check if the raw path contains a null byte, which is invalid
+    if "\x00" in raw_path:
+        raise ValueError(f"{label} contains a null byte")
+    # check if the raw path contains backslashes, which are not allowed
+    if "\\" in raw_path:
+        raise ValueError(
+            f"{label} must use '/' separators: {raw_path!r}")
+
+    # create Path and PureWindowsPath objects for further validation
+    path = Path(raw_path)
+    # PureWindowsPath used to check for Windows-style absolute paths and drive letters
+    windows_path = PureWindowsPath(raw_path)
+    # if the path is absolute, has a drive letter, or contains ".." components
+    if (
+        path.is_absolute()
+        or windows_path.is_absolute()
+        or bool(windows_path.drive)
+        or ".." in path.parts):
+        # invalid path: raise ValueError indicating it must be a safe relative path
+        raise ValueError(
+            f"{label} must be a safe relative path: {raw_path!r}")
+    # if the path starts with ".hm" or ".git"
+    if (path.parts and path.parts[0].lower() in REPOSITORY_INTERNAL_NAMES):
+        # raise ValueError to prevent targeting repository metadata
+        raise ValueError(
+            f"{label} cannot target repository metadata: {raw_path!r}")
+
+    # if the checks pass, return the validated Path object
+    return path
+
+
+def resolve_contained_path(root, value, *, label: str = "path") -> Path:
+    """
+    Used in downloader download_remote_data, repo by _worktree_path and add_worktree,
+    and repo_worktree by worktree_changes.
+    Resolve a relative path beneath root without following symlinks outside it.
+
+    Args:
+        root: The root directory under which the path must be contained.
+        value: The relative path to resolve.
+        label (str): Label for error messages.
+
+    Returns:
+        Path: The resolved path within the root directory.
+
+    Raises:
+        ValueError: If the path is unsafe or resolves outside root.
+        SymlinkPathError: If the path crosses a symbolic link.
+    """
+    root_path = Path(root).expanduser().resolve()
+    # validate the input value to ensure it is a safe relative path
+    relative_path = validate_relative_path(value, label=label)
+    current = root_path
+    # iterate through each part of the relative path to check for symlinks
+    for part in relative_path.parts:
+        # update the current path by appending the next part
+        current = current / part
+        # if the current path is a symbolic link, raise a ValueError
+        if current.is_symlink():
+            raise SymlinkPathError(
+                f"{label} cannot pass through a symbolic link: {current}")
+
+    # candidate is the full path obtained by joining the root path and the relative path
+    candidate = root_path / relative_path
+    # resolve the candidate path without strict checking to avoid exceptions
+    resolved_candidate = candidate.resolve(strict=False)
+    # check if the resolved candidate path is contained within the root path
+    try:
+        resolved_candidate.relative_to(root_path)
+    # if the resolved candidate path is not contained within the root path
+    except ValueError as exc:
+        # raise a ValueError indicating that the path resolves outside its root
+        raise ValueError(
+            f"{label} resolves outside its root: {relative_path!s}") from exc
+
+    # if all checks pass, return the candidate path
+    return candidate
+
+
+def validate_path_component(value, *, label: str = "name") -> str:
+    """
+    Used in cli by build, dothm by _storage_path, repo_builder by build_repo, and
+    repo_config by normalize_tsv_name.
+    Validate a value that must be exactly one filesystem path component.
+
+    Args:
+        value: The path component to validate.
+        label (str): Label for error messages.
+
+    Returns:
+        str: The validated path component.
+
+    Raises:
+        ValueError: If the path component is invalid.
+    """
+    # validate that the input value is a string or Path object
+    if not isinstance(value, (str, Path)):
+        raise ValueError(f"{label} must be a string")
+
+    raw_value = str(value).strip()
+    # if there is a backslash in the raw value, raise an error
+    if "/" in raw_value:
+        raise ValueError(
+            f"{label} must be a single path component: {raw_value!r}")
+
+    # validate the raw value to ensure it is a safe relative path
+    path = validate_relative_path(raw_value, label=label)
+    # if the path does not consist of exactly one component, raise an error
+    if len(path.parts) != 1:
+        raise ValueError(
+            f"{label} must be a single path component: {raw_value!r}")
+
+    # if all checks pass, return the single path component as a string
+    return path.name

@@ -21,7 +21,7 @@ from .fmt_detection import (
     detect_fmt,
     KNOWN_PROCESSING_STAGES,
     KNOWN_STATIC_FILE_STEMS)
-from .dothm import _dump_yaml
+from .dothm import dump_yaml
 from .error import DothmError
 from .helper_functions import (
     CHECKSUM_ALGORITHMS,
@@ -31,12 +31,13 @@ from .helper_functions import (
     valid_checksum,
     atomic_output_path,
     load_yaml_file,
-    normalize_nonempty_string)
+    normalize_nonempty_string,
+    prompt_choice,
+    validate_path_component,
+    validate_relative_path)
 from .repo_config import (
     fmt_fields,
     normalize_tsv_name,
-    validate_path_component,
-    validate_relative_path,
     normalize_remotes,
     fmt_entries_from_config)
 
@@ -75,6 +76,7 @@ KNOWN_FIELD_VALUES: dict[str, tuple[str, ...]] = {
     "kind": KNOWN_PROCESSING_STAGES,
     "algorithm": CHECKSUM_ALGORITHMS}
 
+
 def _network_worker_session():
     """
     Used by _checksum_small_remote_url and _fetch_remote_text.
@@ -95,7 +97,7 @@ def _network_worker_session():
 
 def _remote_url(base_url: str, relative_path: str) -> str:
     """
-    Used by _fetch_remote_text and _checksum_small_remote_url.
+    Used by list_remote_files and build_repo.
     Construct a full remote URL by joining a base URL and a relative path.
 
     Args:
@@ -113,6 +115,7 @@ def _remote_url(base_url: str, relative_path: str) -> str:
 
 def _fetch_remote_text(url: str) -> str:
     """
+    Used by _fetch_optional_remote_text and list_remote_files.
     Fetch the text content of a remote URL using a thread-local requests session.
     Args:
         url: The URL to fetch.
@@ -130,6 +133,7 @@ def _fetch_remote_text(url: str) -> str:
 
 def _fetch_optional_remote_text(url: str) -> str | None:
     """
+    Used by list_remote_files.
     Fetch the text content of a remote URL, returning None if the request fails.
 
     Args:
@@ -147,7 +151,7 @@ def _fetch_optional_remote_text(url: str) -> str | None:
 
 def _checksum_small_remote_file(session, file_url: str) -> tuple[str, str]:
     """
-    Used by build_repo and _checksum_small_remote_url.
+    Used by _checksum_small_remote_url.
     Compute the MD5 checksum of a small remote file.
 
     Args:
@@ -210,8 +214,7 @@ def _checksum_small_remote_url(file_url: str) -> tuple[str, str]:
 @lru_cache(maxsize=256)
 def _get_fmt_match_data(fmt: str) -> tuple[tuple, parse.Parser, int]:
     """
-    Used by _match_file_against_fmts, _get_sorted_fmt_indexes,
-    and _match_static_named_file_plain_only.
+    Used by _get_fmt_match_plan.
     Precompute the parse segments and parser for a given format string.
 
     Args:
@@ -237,7 +240,7 @@ def _get_fmt_match_data(fmt: str) -> tuple[tuple, parse.Parser, int]:
 @lru_cache(maxsize=64)
 def _get_fmt_match_plan(fmts: tuple[str, ...]) -> tuple[tuple, ...]:
     """
-    Used by _match_file_against_fmts.
+    Used by _match_static_named_file_plain_only and _match_file_against_fmts.
     Precompute the match plan for a list of format strings, sorting them by specificity.
 
     Args:
@@ -283,6 +286,7 @@ def _leak_score(segments, result, greedy_names=frozenset()):
         if lit and lit[-1] in string.punctuation:
             leak += value.count(lit[-1])
     return leak
+
 
 def _drop_and_greedy_search(segments, rel_path):
     """
@@ -519,6 +523,7 @@ def _drop_and_greedy_search(segments, rel_path):
     # return the matched named fields and the total number of dropped fields
     return named, drop_count + len(dropped_names)
 
+
 def _match_static_named_file_plain_only(rel_path: str, fmt_entries: list[dict]
                                         ) -> tuple[int, dict] | tuple[None, None]:
     """
@@ -622,13 +627,13 @@ def _match_file_against_fmts(rel_path: str, fmt_entries: list[dict]):
         return None, None
 
     # the best format has the highest matched literal count with the lowest drop count
-    best_fmt, best_parse, _lit_count_matched_from_fmt, _drop_count = max(
+    best_index, best_parse, _lit_count_matched_from_fmt, _drop_count = max(
         valid_fmts, key=lambda m: (m[2], -m[3]))
-    return best_fmt, best_parse
+    return best_index, best_parse
 
 def _manifest_matches(text: str, algorithm: str) -> list[tuple[str, str]]:
     """
-    Used by build_repo.
+    Used by list_remote_files.
     Parse a manifest text and return a list of (checksum, filename) tuples for each line
     in the manifest that has a valid checksum for the given algorithm.
 
@@ -650,7 +655,7 @@ def _manifest_matches(text: str, algorithm: str) -> list[tuple[str, str]]:
 
 def _resolve_manifest_path(filename: str, rel_dir: str) -> str:
     """
-    Used by list_repo_files.
+    Used by list_remote_files.
     Resolve a manifest path relative to a given directory, ensuring it is valid.
 
     Args:
@@ -708,7 +713,7 @@ def _resolve_manifest_path(filename: str, rel_dir: str) -> str:
 
 def _normalize_index_href(href: str, *, is_directory: bool) -> str:
     """
-    Used by build_repo.
+    Used by list_remote_files.
     Normalize an index href to ensure it is a valid relative path.
 
     Args:
@@ -805,27 +810,6 @@ def _normalize_fmt_entries(fmt_entries: list[dict]) -> list[dict]:
 
     # return the list of normalized fmt entries
     return normalized
-
-
-def _prompt_choice(prompt: str, choices: set[str]) -> str:
-    """
-    Prompt the user to make a choice from a set of valid options.
-
-    Args:
-        prompt: The prompt message to display to the user.
-        choices: A set of valid choices (case-insensitive).
-
-    Returns:
-        The user's choice as a lowercase string.
-
-    Raises:
-        ValueError: If the user's choice is not in the set of valid choices.
-    """
-    choice = input(prompt).strip().lower()
-    # if the user's choice is not in the set of valid choices, raise a ValueError
-    if choice not in choices:
-        raise ValueError(f"Unrecognized choice: {choice!r}")
-    return choice
 
 
 def list_remote_files(base_url: str) \
@@ -994,6 +978,7 @@ def build_repo(
     repo_path: Path,
     dataset_name: str,
     fmt_entries: list[dict] | None = None,
+    config_file: Path | str | None = None,
     remotes: list[dict | str] | dict | str | None = None,
     overwrite: bool = False,
     ) -> "Repo":
@@ -1005,6 +990,7 @@ def build_repo(
         repo_path: Path where the hallmark repo will be created.
         fmt_entries: dict entries with "fmt", "db", and optional "name" keys.
          If None, the function will attempt to detect the format entries automatically.
+        config_file: Path to an existing config.yml file to load fmt entries from.
         remotes: Optional list of remote repos to add to the repo. Each remote can be a
          dict with "name" and "url" keys, or a str representing the name of the remote.
 
@@ -1021,6 +1007,33 @@ def build_repo(
     remotes_provided = remotes is not None
     # Normalize the remotes into a consistent list of dictionaries
     remotes = normalize_remotes(remotes)
+
+    # if a config_file is provided
+    if config_file is not None:
+        # config file and fmt_entries are mutually exclusive
+        if fmt_entries is not None:
+            raise ValueError(
+                "Cannot provide both fmt_entries and config_file. "
+                "Choose one or the other.")
+        # get the path to the config file, expanding ~ and resolving relative paths
+        config_path = Path(config_file).expanduser()
+        # if the config path is a directory, assume it contains a config.yml file
+        if config_path.is_dir():
+            config_path = config_path / "config.yml"
+        # if the config file does not exist, raise a FileNotFoundError
+        if not config_path.is_file():
+            raise FileNotFoundError(f"Config file does not exist: {config_path}")
+        # load the config.yml file and extract the fmt entries
+        loaded_config = load_yaml_file(config_path)
+        # extract the fmt entries from the loaded config
+        fmt_entries = fmt_entries_from_config(loaded_config)
+        # raise a ValueError if no fmt entries were found in the config file
+        if not fmt_entries:
+            raise ValueError(f"No fmt entries found in config file {config_path}.")
+        # if remotes were not provided and the loaded config has a "remote" key
+        if not remotes_provided and loaded_config.get("remote"):
+            # normalize the remotes from the loaded config and use them
+            remotes = normalize_remotes(loaded_config["remote"])
 
     repo_path = Path(repo_path).expanduser().resolve()
     existing_repo = None
@@ -1063,13 +1076,16 @@ def build_repo(
 
     # if the repo path already exists and has a config.yml, we will reuse it
     reused_from_existing_repo = False
+    # records the interactive include_drives choice when fmts are auto-detected, so it
+    # can be persisted to meta.yml and isn't lost once the build finishes
+    detect_include_drives: bool | None = None
 
     if fmt_entries is None and existing_fmt_entries:
         print(f"Found existing config.yml with {len(existing_fmt_entries)} fmt(s):")
         for entry in existing_fmt_entries:
             print(f"  {entry['fmt']!r} -> {entry['db']}")
         # prompt the user to either use the existing fmt entries or update them
-        keep_choice = _prompt_choice("Use these fmts as-is, or update the list? "
+        keep_choice = prompt_choice("Use these fmts as-is, or update the list? "
         "[use/update]: ", {"use", "update"})
         # if user chooses to use existing fmts, set them as the current fmt_entries
         if keep_choice == "use":
@@ -1085,7 +1101,7 @@ def build_repo(
 
     if fmt_entries is None:
         # prompt the user to choose how to supply fmt entries
-        choice = _prompt_choice(
+        choice = prompt_choice(
             "Load fmts from an existing config file, detect them "
             "automatically, or input them yourself? "
             "[config/detect/input]: ", {"config", "detect", "input"})
@@ -1115,8 +1131,10 @@ def build_repo(
 
         elif choice == "detect":
             # ask the user if they want to include drive files during fmt detection
-            include_drives = _prompt_choice("Include drive/archive files during fmt " \
+            include_drives = prompt_choice("Include drive/archive files during fmt " \
             "detection? [yes/no]: ", {"yes", "no"}, ) == "yes"
+            # remember the choice so it can be recorded in meta.yml below
+            detect_include_drives = include_drives
 
             # check if the remote files have already been listed; if not, list them now
             _ensure_remote_files_listed()
@@ -1290,6 +1308,9 @@ def build_repo(
 
     # hallmark's bookkeeping: create and commit the meta.yml file
     meta_dict: dict = {"dataset": dataset_name}
+    # record the include_drives choice so a detect-built repo's fmts stay consistent
+    if detect_include_drives is not None:
+        meta_dict["detect_include_drives"] = detect_include_drives
     repo.dothm.dump_yml(meta_dict, "meta")
     repo.dothm.index.add(["meta.yml"])
     repo.dothm.index.commit(f"Initialize dataset: {dataset_name}")
@@ -1345,12 +1366,12 @@ def build_repo(
                 f.write("\n")
             # write static file entries first, then fmt entries, with newline in between
             if static_file_entries:
-                _dump_yaml(static_file_entries, f)
+                dump_yaml(static_file_entries, f)
             if static_file_entries and fmt_manifest:
                 f.write("\n")
             # write the fmt entries to the config.yml file
             if fmt_manifest:
-                _dump_yaml(fmt_manifest, f)
+                dump_yaml(fmt_manifest, f)
             # if there are no static file or fmt entries, write an empty list
             if not static_file_entries and not fmt_manifest:
                 f.write(" []\n")
@@ -1363,7 +1384,7 @@ def build_repo(
                 if entries:
                     f.write("\n")
                     # dump the section name and its entries to the config.yml file
-                    _dump_yaml({section_name: entries}, f)
+                    dump_yaml({section_name: entries}, f)
 
     repo.dothm.index.add(["config.yml"])
     repo.dothm.index.commit(f"Add dataset manifest: {dataset_name}")

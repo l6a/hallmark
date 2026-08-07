@@ -7,11 +7,13 @@ updating repository configuration values stored in ``config.yml``.
 
 from __future__ import annotations
 
-from pathlib import Path, PureWindowsPath
+from pathlib import Path
 from string import Formatter
 from typing import Dict, Optional
 
-from .helper_functions import (REPOSITORY_INTERNAL_NAMES, normalize_nonempty_string)
+from .helper_functions import (
+    as_list_of_dicts, coerce_fmt_value, normalize_nonempty_string,
+    validate_path_component, validate_relative_path)
 
 def _update_remote_config(
     config: dict,
@@ -19,6 +21,7 @@ def _update_remote_config(
     remote_url: Optional[str],
     ) -> None:
     """
+    Used by set_config.
     Update the repository configuration with a new remote name and/or URL.
 
     Args:
@@ -83,6 +86,32 @@ def _update_remote_config(
     # if preserve_list is True, store the normalized list;
     # otherwise, store only the first entry
     config["remote"] = (normalized if preserve_list else normalized[0])
+
+
+def _data_spec_or_none(config) -> Optional[dict]:
+    """
+    Used by single_data_fmt and require_branch_data_spec.
+    Extract the single data specification from a repository configuration.
+
+    Args:
+        config (dict): The repository configuration dictionary.
+
+    Returns:
+        Optional[dict]: The single data specification if defined,
+        or None if not defined or if the configuration is invalid.
+    """
+    # if the provided config is not a dictionary, return None
+    if not isinstance(config, dict):
+        return None
+    # get the "data" section from the configuration
+    data = config.get("data")
+    # if the "data" section is not a list with exactly one entry that is a dictionary
+    if (not isinstance(data, list) or len(data) != 1 or not isinstance(data[0], dict)):
+        # indicate that the configuration does not define exactly one entry
+        return None
+    # return the first (and only) entry in the "data" list
+    return data[0]
+
 
 def normalize_remotes(remotes) -> list[dict]:
     """
@@ -188,14 +217,9 @@ def fmt_entries_from_config(config: dict) -> list[dict]:
     if data is None:
         return []
 
-    # if the "data" section is a dictionary, wrap it in a list for uniform processing
-    if isinstance(data, dict):
-        entries = [data]
-    # if the "data" section is a list, use it directly
-    elif isinstance(data, list):
-        entries = data
-    # otherwise, raise a ValueError since "data" must be a mapping or list of mappings
-    else:
+    # coerce "data" into a list (a dict becomes a single-item list, as-is if a list)
+    entries = as_list_of_dicts(data)
+    if entries is None:
         raise ValueError('config "data" must be a mapping or list of mappings')
 
     # validate that each entry in the "data" list is a dictionary
@@ -204,30 +228,6 @@ def fmt_entries_from_config(config: dict) -> list[dict]:
             raise ValueError(f"config data entry {index} must be a mapping")
     # return a list of entries that contain the "fmt" key
     return [entry for entry in entries if "fmt" in entry]
-
-
-def _single_data_spec(config) -> Optional[dict]:
-    """
-    Extract the single data specification from a repository configuration.
-
-    Args:
-        config (dict): The repository configuration dictionary.
-
-    Returns:
-        Optional[dict]: The single data specification if defined,
-        or None if not defined or if the configuration is invalid.
-    """
-    # if the provided config is not a dictionary, return None
-    if not isinstance(config, dict):
-        return None
-    # get the "data" section from the configuration
-    data = config.get("data")
-    # if the "data" section is not a list with exactly one entry that is a dictionary
-    if (not isinstance(data, list) or len(data) != 1 or not isinstance(data[0], dict)):
-        # indicate that the configuration does not define exactly one entry
-        return None
-    # return the first (and only) entry in the "data" list
-    return data[0]
 
 
 def single_data_fmt(config: dict) -> Optional[str]:
@@ -243,7 +243,7 @@ def single_data_fmt(config: dict) -> Optional[str]:
         or None if not defined or if the configuration is invalid.
     """
     # call the helper function to get the single data specification from the config
-    spec = _single_data_spec(config)
+    spec = _data_spec_or_none(config)
     # if there is no valid single data specification, return None
     if spec is None:
         return None
@@ -254,7 +254,7 @@ def single_data_fmt(config: dict) -> Optional[str]:
     return fmt.strip()
 
 
-def ensure_branch_data_spec(config: dict) -> dict:
+def get_or_create_branch_data_spec(config: dict) -> dict:
     """
     Ensure the configuration contains a valid data specification.
 
@@ -277,7 +277,7 @@ def ensure_branch_data_spec(config: dict) -> dict:
     return config["data"][0]
 
 
-def branch_data_spec(repo) -> dict:
+def require_branch_data_spec(repo) -> dict:
     """
     Return the branch data specification. Raises RuntimeError if
     the configuration does not define exactly one entry under ``data``.
@@ -289,7 +289,7 @@ def branch_data_spec(repo) -> dict:
         dict: The branch data specification.
     """
     # call the helper function to get the single data specification from the config
-    spec = _single_data_spec(repo.state.config)
+    spec = _data_spec_or_none(repo.state.config)
     # raise a RuntimeError if there is no valid single data specification
     if spec is None:
         raise RuntimeError(
@@ -309,7 +309,7 @@ def branch_fmt(repo) -> str:
         str: The format string stored in ``data[0].fmt``.
     """
     return normalize_nonempty_string(
-        branch_data_spec(repo).get("fmt"),
+        require_branch_data_spec(repo).get("fmt"),
         label="branch data[0].fmt",
         exception_type=RuntimeError)
 
@@ -379,7 +379,7 @@ def set_config(
     # if a new format string or encoding updates are provided
     if fmt is not None or encoding_updates is not None:
         # ensure that the "data" section has exactly one entry and retrieve it
-        spec = ensure_branch_data_spec(config)
+        spec = get_or_create_branch_data_spec(config)
         updated_spec = {}
         # if a new format string is provided, update the "fmt" key in the spec
         if fmt is not None:
@@ -428,7 +428,7 @@ def branch_encodings(repo) -> list[dict]:
         list[dict]: A list containing the encoding specification, or an
         empty list if no encodings are defined.
     """
-    spec = branch_data_spec(repo)
+    spec = require_branch_data_spec(repo)
     return [spec] if isinstance(spec.get("encoding"), dict) else []
 
 
@@ -452,158 +452,6 @@ def fmt_fields(fmt: str) -> list[str]:
             seen.add(field_name)
             fields.append(field_name)
     return fields
-
-
-def coerce_fmt_value(value: str, spec: str):
-    """
-    Convert a value according to a format specification.
-
-    Args:
-        value (str): Value to convert.
-        spec (str): Format specification.
-
-    Returns:
-        The converted value.
-    """
-    if not spec:
-        return value
-    if spec.endswith("d"):
-        return int(float(value))
-    if spec[-1] in {"f", "F", "g", "G", "e", "E"}:
-        return float(value)
-    return value
-
-class SymlinkPathError(ValueError):
-    """Raised when a contained path crosses a symbolic link."""
-
-def validate_relative_path(value, *, label: str = "path") -> Path:
-    """
-    Validate that a given path is a safe relative path.
-
-    Args:
-        value: The path to validate.
-        label (str): Label for error messages.
-
-    Returns:
-        Path: The validated relative path.
-
-    Raises:
-        ValueError: If the path is empty, absolute, traverses through a
-            parent directory, uses Windows separators, or targets repository metadata.
-    """
-    # raw path is the string representation of the input value
-    raw_path = str(value)
-    # check if the raw path is empty or just a dot (current directory)
-    if not raw_path or raw_path == ".":
-        raise ValueError(f"{label} cannot be empty")
-    # check if the raw path contains a null byte, which is invalid
-    if "\x00" in raw_path:
-        raise ValueError(f"{label} contains a null byte")
-    # check if the raw path contains backslashes, which are not allowed
-    if "\\" in raw_path:
-        raise ValueError(
-            f"{label} must use '/' separators: {raw_path!r}")
-
-    # create Path and PureWindowsPath objects for further validation
-    path = Path(raw_path)
-    # PureWindowsPath used to check for Windows-style absolute paths and drive letters
-    windows_path = PureWindowsPath(raw_path)
-    # if the path is absolute, has a drive letter, or contains ".." components
-    if (
-        path.is_absolute()
-        or windows_path.is_absolute()
-        or bool(windows_path.drive)
-        or ".." in path.parts):
-        # invalid path: raise ValueError indicating it must be a safe relative path
-        raise ValueError(
-            f"{label} must be a safe relative path: {raw_path!r}")
-    # if the path starts with ".hm" or ".git"
-    if (path.parts and path.parts[0].lower() in REPOSITORY_INTERNAL_NAMES):
-        # raise ValueError to prevent targeting repository metadata
-        raise ValueError(
-            f"{label} cannot target repository metadata: {raw_path!r}")
-
-    # if the checks pass, return the validated Path object
-    return path
-
-def resolve_contained_path(root, value, *, label: str = "path") -> Path:
-    """
-    Resolve a relative path beneath root without following symlinks outside it.
-
-    Args:
-        root: The root directory under which the path must be contained.
-        value: The relative path to resolve.
-        label (str): Label for error messages.
-
-    Returns:
-        Path: The resolved path within the root directory.
-
-    Raises:
-        ValueError: If the path is unsafe or resolves outside root.
-        SymlinkPathError: If the path crosses a symbolic link.
-    """
-    root_path = Path(root).expanduser().resolve()
-    # validate the input value to ensure it is a safe relative path
-    relative_path = validate_relative_path(value, label=label)
-    current = root_path
-    # iterate through each part of the relative path to check for symlinks
-    for part in relative_path.parts:
-        # update the current path by appending the next part
-        current = current / part
-        # if the current path is a symbolic link, raise a ValueError
-        if current.is_symlink():
-            raise SymlinkPathError(
-                f"{label} cannot pass through a symbolic link: {current}")
-
-    # candidate is the full path obtained by joining the root path and the relative path
-    candidate = root_path / relative_path
-    # resolve the candidate path without strict checking to avoid exceptions
-    resolved_candidate = candidate.resolve(strict=False)
-    # check if the resolved candidate path is contained within the root path
-    try:
-        resolved_candidate.relative_to(root_path)
-    # if the resolved candidate path is not contained within the root path
-    except ValueError as exc:
-        # raise a ValueError indicating that the path resolves outside its root
-        raise ValueError(
-            f"{label} resolves outside its root: {relative_path!s}") from exc
-
-    # if all checks pass, return the candidate path
-    return candidate
-
-def validate_path_component(value, *, label: str = "name") -> str:
-    """
-    Validate a value that must be exactly one filesystem path component.
-
-    Args:
-        value: The path component to validate.
-        label (str): Label for error messages.
-
-    Returns:
-        str: The validated path component.
-
-    Raises:
-        ValueError: If the path component is invalid.
-    """
-    # validate that the input value is a string or Path object
-    if not isinstance(value, (str, Path)):
-        raise ValueError(f"{label} must be a string")
-
-    raw_value = str(value).strip()
-    # if there is a backslash in the raw value, raise an error
-    if "/" in raw_value:
-        raise ValueError(
-            f"{label} must be a single path component: {raw_value!r}")
-
-    # validate the raw value to ensure it is a safe relative path
-    path = validate_relative_path(raw_value, label=label)
-    # if the path does not consist of exactly one component, raise an error
-    if len(path.parts) != 1:
-        raise ValueError(
-            f"{label} must be a single path component: {raw_value!r}")
-
-    # if all checks pass, return the single path component as a string
-    return path.name
 
 
 def normalize_tsv_name(value) -> str:
@@ -639,6 +487,7 @@ def normalize_tsv_name(value) -> str:
     # if all checks pass, return the validated name
     return name
 
+
 def row_to_path(row, fmt: str) -> Path:
     """
     Construct a file path from a table row.
@@ -658,21 +507,3 @@ def row_to_path(row, fmt: str) -> Path:
     rendered_path = fmt.format(**values)
     # validate the rendered path to ensure it is a safe relative path
     return validate_relative_path(rendered_path, label="formatted data path")
-
-
-def path_from_row(repo, row, fmt: Optional[str] = None) -> Path:
-    """
-    Construct a file path from a table row.
-
-    If no format string is provided, the repository's configured format
-    is used.
-
-    Args:
-        repo: Repository object.
-        row: Table row containing field values.
-        fmt (str, optional): Format string to use.
-
-    Returns:
-        Path: Path generated from the row values.
-    """
-    return row_to_path(row, fmt or branch_fmt(repo))

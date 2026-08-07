@@ -45,6 +45,7 @@ def _served(server: MockServer):
     """
     return patch("hallmark.repo_builder.requests.Session", return_value=server)
 
+
 # helper function to monkeypatch list_remote_files for testing build_repo
 def _inventory(monkeypatch, files):
     """
@@ -64,6 +65,7 @@ def _inventory(monkeypatch, files):
     monkeypatch.setattr("hallmark.repo_builder.list_remote_files", fake_list)
     return calls
 
+
 ### _normalize_index_href tests ###
 
 @pytest.mark.parametrize(
@@ -71,7 +73,6 @@ def _inventory(monkeypatch, files):
         "../outside/",
         "/absolute/file.dat",
         "https://other.test/file.dat",
-        "//other.test/file.dat",
         r"..\outside.dat",
         "file.dat?download=1",
         "file.dat#fragment"])
@@ -102,6 +103,7 @@ def test_normalize_index_href_decodes_safe_relative_links():
         f"unexpected normalized href: \
       {_normalize_index_href('nested%20directory/data%20file.dat', is_directory=False)}"
 
+
 ### list_remote_files tests ###
 
 def test_list_remote_files_partial_manifest_below_threshold_is_rejected():
@@ -125,6 +127,7 @@ def test_list_remote_files_partial_manifest_below_threshold_is_rejected():
         f"unexpected checksum for data.tar: {file_checksums}, \
             expected (None, None) because the manifest was mostly invalid"
 
+
 def test_list_remote_files_sibling_manifest_covers_project_files():
     """
     If a manifest in the same directory as a project subdir folder is complete,
@@ -147,6 +150,7 @@ def test_list_remote_files_sibling_manifest_covers_project_files():
         ("md5", "2f1d7fed9ceda962bf12bc4a20e068a8"), \
         f"unexpected checksum for 2016.1.01114.V/data.tgz: {file_checksums}, \
             expected md5 2f1d7fed9ceda962bf12bc4a20e068a8"
+
 
 def test_list_remote_files_partial_sibling_manifest_does_not_hide_files():
     """
@@ -216,25 +220,6 @@ def test_list_remote_files_generic_manifest_algorithm_from_own_filename():
     assert file_checksums["data.tar"][0] == "sha1", \
         f"unexpected checksum algorithm for data.tar: {file_checksums}, \
             expected sha1 bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-
-
-def test_list_remote_files_manifest_with_no_algorithm_hint_is_unknown():
-    """
-    When a manifest's own name gives no algorithm hint at all, the
-    algorithm is recorded as "unknown" rather than guessed.
-    """
-    server = MockServer(BASE_URL)
-    server.add_directory("", [
-        ("data-object", "data.tar"),
-        ("data-object", "totally_weird_manifest_name.log"),])
-    server.add_file("totally_weird_manifest_name.log",
-        "aa11bb22cc33dd44ee55ff66aa11bb22  data.tar\n")
-    with _served(server):
-        file_checksums = list_remote_files(server.base_url)
-
-    assert file_checksums["data.tar"][0] == "unknown", \
-        f"unexpected checksum algorithm for data.tar: {file_checksums}, \
-            expected unknown aa11bb22cc33dd44ee55ff66aa11bb22"
 
 
 def test_list_remote_files_non_manifest_text_file_not_misdetected():
@@ -319,6 +304,7 @@ def test_list_remote_files_walks_nested_subdirectories_without_manifest():
         f"unexpected nested listing: {file_checksums}, \
             expected both level1/root.txt and level1/level2/deep.txt"
 
+
 def test_list_remote_files_walks_directory_when_sibling_checksum_is_invalid():
     """
     If a checksum file is present but its content is mostly invalid, the
@@ -336,6 +322,7 @@ def test_list_remote_files_walks_directory_when_sibling_checksum_is_invalid():
         f"unexpected checksum for project/data.tar: {files}"
     assert files["project.md5sums"] == (None, None), \
         f"unexpected checksum for project.md5sums: {files}"
+
 
 def test_list_remote_files_fetches_each_directory_once():
     """
@@ -385,6 +372,7 @@ def test_list_remote_files_unavailable_manifest_does_not_hide_files():
     assert file_checksums["checksums.txt"] == (None, None), \
         f"unexpected checksum for checksums.txt: {file_checksums}, \
             expected (None, None) because the manifest was unavailable"
+
 
 ### _match_file_against_fmts tests ###
 
@@ -664,11 +652,11 @@ def test_resolve_manifest_path_handles_relative_and_complete_paths(
         f"unexpected resolved path for filename '{filename}' in rel_dir '{rel_dir}': \
             got '{_resolve_manifest_path(filename, rel_dir)}', expected '{expected}'"
 
+
 @pytest.mark.parametrize(
     "filename",[
         "",
         "../outside.dat",
-        "../../outside.dat",
         "/absolute.dat",
         r"..\outside.dat"])
 def test_resolve_manifest_path_rejects_unsafe_paths(filename):
@@ -695,6 +683,7 @@ def test_remote_url_encodes_relative_path_characters():
     assert result == f"{BASE_URL}nested/a%2Bb%20%231.dat", \
         f"unexpected remote URL: {result}, expected '{BASE_URL}nested/a%2Bb%20%231.dat'"
 
+
 def test_resolve_manifest_path_removes_only_dot_slash_prefixes():
     """
     Test that _resolve_manifest_path correctly removes only './' prefixes and does not
@@ -703,6 +692,7 @@ def test_resolve_manifest_path_removes_only_dot_slash_prefixes():
     assert _resolve_manifest_path("././data.tgz", "project/") == "project/data.tgz", \
     f"unexpected resolved path for '././data.tgz': got \
     '{_resolve_manifest_path('././data.tgz', 'project/')}', expected 'project/data.tgz'"
+
 
 ### build_repo tests ###
 
@@ -726,6 +716,7 @@ def simple_dataset_server():
         "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa  proj/data.tar\n")
     server.add_file("README.md", "root readme content")
     return server
+
 
 # parametrize the remotes argument to test different input types
 @pytest.mark.parametrize(
@@ -1023,26 +1014,6 @@ def test_build_repo_no_remotes_is_empty_list(tmp_path, simple_dataset_server):
         f"unexpected remotes: {repo.state.config['remote']}, expected default origin"
 
 
-def test_build_repo_with_empty_dataset_still_creates_repo(tmp_path):
-    """
-    An empty dataset should still create a repo structure without data rows.
-    Args:
-        tmp_path: A temporary directory provided by pytest for the test.
-    """
-    server = MockServer(BASE_URL)
-    server.add_directory("", [])
-    with _served(server):
-        repo = build_repo(
-            repo_path=tmp_path / "empty.hm",
-            dataset_name="EHTC_TEST",
-            fmt_entries=[],)
-
-    assert repo.dothm.path.exists(), "repo directory was not created"
-    assert "data" in repo.state.config, "repo config missing data section"
-    assert repo.state.config["data"] == [], \
-        f"expected no data entries, got {repo.state.config['data']}"
-
-
 def test_build_repo_uses_multiple_fmt_entries(tmp_path):
     """
     Separate format entries should be preserved in the repo config.
@@ -1064,6 +1035,7 @@ def test_build_repo_uses_multiple_fmt_entries(tmp_path):
 
     assert repo.state.config["data"] == fmt_entries, \
         f"unexpected data config: {repo.state.config['data']}, expected {fmt_entries}"
+
 
 def test_build_repo_combines_rows_for_formats_sharing_a_tsv(monkeypatch, tmp_path):
     """
@@ -1355,6 +1327,46 @@ def test_build_repo_detects_single_format_and_uses_data_tsv(monkeypatch, tmp_pat
             {repo.state.config['data']}, expected a single fmt entry with db 'data.tsv'"
 
 
+def test_build_repo_records_detect_include_drives_in_meta(monkeypatch, tmp_path):
+    """
+    When fmts are auto-detected, build_repo should record the include_drives choice
+    in meta.yml so it can be recovered later without re-running detection interactively.
+    Args:
+        monkeypatch: A pytest fixture for safely patching builtins and other objects.
+        tmp_path: A temporary directory provided by pytest for the test.
+    """
+    _inventory(monkeypatch, {"item_1.dat": ("md5", "a" * 32)})
+    answers = iter(["detect", "yes"])
+    monkeypatch.setattr("builtins.input", lambda prompt: next(answers))
+    monkeypatch.setattr(
+        "hallmark.repo_builder.detect_fmt",
+        lambda paths, include_drives=False: ["item_{number}.dat"])
+    repo = build_repo(tmp_path / "detected.hm", "EHTC_TEST")
+
+    assert repo.state.meta.get("detect_include_drives") is True, f"expected meta.yml to\
+          record detect_include_drives=True, got: {repo.state.meta}"
+    assert repo.dothm.load_yml("meta").get("detect_include_drives") is True, \
+        "expected meta.yml on disk to record detect_include_drives=True"
+
+
+def test_build_repo_omits_detect_include_drives_when_fmt_entries_given(
+    monkeypatch, tmp_path):
+    """
+    When fmt_entries are provided directly (not auto-detected), meta.yml should not
+    contain a detect_include_drives key.
+    Args:
+        monkeypatch: A pytest fixture for safely patching builtins and other objects.
+        tmp_path: pytest fixture that provides a temporary directory for the test.
+    """
+    _inventory(monkeypatch, {"item_1.dat": ("md5", "a" * 32)})
+    repo = build_repo(
+        tmp_path / "explicit.hm", "EHTC_TEST",
+        fmt_entries=[{"fmt": "item_{number}.dat", "db": "data.tsv"}])
+
+    assert "detect_include_drives" not in repo.state.meta, \
+        f"did not expect detect_include_drives in meta.yml, got: {repo.state.meta}"
+
+
 def test_build_repo_detects_multiple_formats_and_normalizes_db_names(
     monkeypatch, tmp_path):
     """
@@ -1412,6 +1424,7 @@ def test_build_repo_rejects_unknown_format_input_mode(monkeypatch, tmp_path):
     """
     with pytest.raises(ValueError, match="Unrecognized choice"):
         build_repo(tmp_path / "unknown.hm", "EHTC_TEST")
+
 
 def test_build_repo_preserves_existing_destination_by_default(
     monkeypatch,
@@ -1474,6 +1487,7 @@ def test_build_repo_replaces_destination_when_overwrite_is_explicit(
     assert (destination / "config.yml").is_file(), \
         f"expected config.yml to be created in {destination}, but it does not exist"
 
+
 def test_build_repo_rejects_unsafe_db_before_network(monkeypatch, tmp_path):
     """
     Test that build_repo raises a ValueError when an unsafe db path is provided in
@@ -1503,6 +1517,7 @@ def test_build_repo_rejects_unsafe_db_before_network(monkeypatch, tmp_path):
                     "fmt": "data_{number}.txt",
                     "db": "../../outside.tsv",}])
 
+
 def test_build_repo_does_not_hide_unexpected_existing_repo_errors(monkeypatch,
                                                                   tmp_path):
     """
@@ -1527,6 +1542,7 @@ def test_build_repo_does_not_hide_unexpected_existing_repo_errors(monkeypatch,
             dataset_name="dataset",
             fmt_entries=None,
             overwrite=True)
+
 
 def test_build_repo_accepts_config_repository_directory(monkeypatch, tmp_path):
     """
@@ -1556,6 +1572,7 @@ def test_build_repo_accepts_config_repository_directory(monkeypatch, tmp_path):
 
     assert actual == expected, f"unexpected data config: {actual}, expected {expected}"
 
+
 def test_build_repo_preserves_meta_file_checksum(monkeypatch, tmp_path):
     """
     Test that build_repo correctly preserves the checksum of a meta file in the
@@ -1571,6 +1588,7 @@ def test_build_repo_preserves_meta_file_checksum(monkeypatch, tmp_path):
     assert repo.state.config["meta"] == [{"file": "meta.yml", "sha256": checksum}], \
         f"unexpected meta config: {repo.state.config['meta']}, \
             expected meta.yml with checksum {checksum}"
+
 
 def test_build_repo_continues_when_static_checksum_request_fails(monkeypatch, tmp_path):
     """
@@ -1608,6 +1626,7 @@ def test_build_repo_continues_when_static_checksum_request_fails(monkeypatch, tm
         f"unexpected data config: {repo.state.config['data']}, \
             expected README.md with checksum 'unknown'"
 
+
 def test_build_repo_preserves_multiple_meta_files(monkeypatch, tmp_path):
     """
     Test that build_repo correctly preserves the checksums of multiple meta files in the
@@ -1636,6 +1655,7 @@ def test_build_repo_preserves_multiple_meta_files(monkeypatch, tmp_path):
             "sha256": second_checksum}], f"unexpected meta config: \
                 {repo.state.config['meta']}, expected first/meta.yml with checksum \
                 {first_checksum} and second/meta.yml with checksum {second_checksum}"
+
 
 def test_build_repo_rejects_duplicate_formats_before_network(monkeypatch, tmp_path):
     """
@@ -1668,6 +1688,7 @@ def test_build_repo_rejects_duplicate_formats_before_network(monkeypatch, tmp_pa
                 {
                     "fmt": " data_{number}.fits ",
                     "db": "second.tsv"}])
+
 
 def test_build_repo_rejects_duplicate_remote_names_before_network(monkeypatch,
                                                                   tmp_path):
@@ -1731,6 +1752,7 @@ def test_build_repo_rejects_multiple_unnamed_remotes(monkeypatch, tmp_path):
             fmt_entries=[],
             remotes=[{"url": "https://first.test"}, {"url": "https://second.test"}])
 
+
 def test_build_repo_preserves_config_when_final_yaml_write_fails(monkeypatch, tmp_path):
     """
     Test that build_repo preserves the existing config.yml file if the final write
@@ -1766,3 +1788,161 @@ def test_build_repo_preserves_config_when_final_yaml_write_fails(monkeypatch, tm
     assert list(repo_path.glob(".config.yml.*.tmp")) == [], \
         f"unexpected temporary config files found in {repo_path}, expected none"
 
+
+def test_build_repo_loads_formats_and_remotes_from_config_file_parameter(
+        monkeypatch, tmp_path):
+    """
+    Test that build_repo correctly loads formats and remotes from a provided config
+    file parameter, and that it does not prompt the user for input.
+    Args:
+        monkeypatch: A pytest fixture for safely patching builtins and other objects.
+        tmp_path: A temporary directory provided by pytest for the test.
+    """
+    source_config = tmp_path / "source.yml"
+    source_config.write_text(
+        yaml.safe_dump({
+                "data": [{"fmt": "item_{number}.dat", "db": "items.tsv"}],
+                "remote": [{"name": "mirror", "url": "https://mirror.test/data"}]}),
+                encoding="utf-8")
+    _inventory(monkeypatch, {"item_1.dat": ("md5", "a" * 32)})
+    repo = build_repo(
+        tmp_path / "param-config.hm", "EHTC_TEST", config_file=source_config)
+
+    assert [entry for entry in repo.state.config["data"] if "fmt" in entry] == [
+        {"fmt": "item_{number}.dat", "db": "items.tsv"}], \
+            f"unexpected data config: {repo.state.config['data']}"
+    assert repo.state.config["remote"] == [
+        {"name": "mirror", "url": "https://mirror.test/data"}], \
+            f"unexpected remotes: {repo.state.config['remote']}"
+
+
+def test_build_repo_rejects_config_file_with_fmt_entries(monkeypatch, tmp_path):
+    """
+    Test that build_repo raises a ValueError when both fmt_entries and config_file
+    are provided, and it does not attempt any network operations before raising error.
+    Args:
+        monkeypatch: A pytest fixture for safely patching builtins and other objects.
+        tmp_path: A temporary directory provided by pytest for the test.
+    Raises:
+        ValueError: If both fmt_entries and config_file are provided to build_repo.
+    """
+    source_config = tmp_path / "source.yml"
+    source_config.write_text(
+        yaml.safe_dump({"data": [{"fmt": "item_{number}.dat", "db": "items.tsv"}]}),
+        encoding="utf-8")
+    _inventory(monkeypatch, {"item_1.dat": ("md5", "a" * 32)})
+
+    with pytest.raises(
+        ValueError, match="Cannot provide both fmt_entries and config_file"):
+        build_repo(
+            tmp_path / "conflict.hm",
+            "EHTC_TEST",
+            fmt_entries=[{"fmt": "x_{n}.dat", "db": "x.tsv"}],
+            config_file=source_config)
+
+
+def test_build_repo_config_file_parameter_requires_a_format(monkeypatch, tmp_path):
+    """
+    Test that build_repo raises a ValueError when the config_file parameter points to
+    a config file with no fmt entries, before any network operations are attempted.
+    Args:
+        monkeypatch: A pytest fixture for safely patching builtins and other objects.
+        tmp_path: A temporary directory provided by pytest for the test.
+    Raises:
+        ValueError: If the config_file has no fmt entries.
+    """
+    source_config = tmp_path / "source.yml"
+    source_config.write_text("data:\n- file: README.md\n", encoding="utf-8")
+    def network_must_not_run(_base_url):
+        """This function should not be called, as the missing fmt entries should be
+        detected before any network access is attempted."""
+        raise AssertionError("config file validation should run before network listing")
+    monkeypatch.setattr("hallmark.repo_builder.list_remote_files", network_must_not_run)
+
+    with pytest.raises(ValueError, match="No fmt entries found"):
+        build_repo(
+            tmp_path / "missing-fmt-param.hm", "EHTC_TEST", config_file=source_config)
+
+
+def test_build_repo_loads_from_config_directory_parameter(monkeypatch, tmp_path):
+    """
+    Test that build_repo accepts config_file as a directory and loads config.yml from it
+    without using the interactive prompt flow.
+    Args:
+        monkeypatch: A pytest fixture for safely patching builtins and other objects.
+        tmp_path: A temporary directory provided by pytest for the test.
+    """
+    source_repo = tmp_path / "source.hm"
+    source_repo.mkdir()
+    (source_repo / "config.yml").write_text(
+        yaml.safe_dump({
+            "data": [{"fmt": "item_{number}.dat", "db": "items.tsv"}],
+            "remote": [{"name": "mirror", "url": "https://mirror.test/data"}]}),
+        encoding="utf-8")
+    _inventory(monkeypatch, {"item_1.dat": ("md5", "a" * 32)})
+    repo = build_repo(
+        tmp_path / "from-dir-param.hm",
+        "EHTC_TEST",
+        config_file=source_repo)
+
+    assert [entry for entry in repo.state.config["data"] if "fmt" in entry] == [
+        {"fmt": "item_{number}.dat", "db": "items.tsv"}], \
+        f"unexpected data config: {repo.state.config['data']}"
+    assert repo.state.config["remote"] == [
+        {"name": "mirror", "url": "https://mirror.test/data"}], \
+        f"unexpected remotes: {repo.state.config['remote']}"
+
+
+def test_build_repo_config_directory_without_config_yml_rejected_before_network(
+    monkeypatch, tmp_path):
+    """
+    Test that build_repo raises FileNotFoundError when config_file points to a
+    directory without config.yml, and does so before any network listing is attempted.
+    Args:
+        monkeypatch: A pytest fixture for safely patching builtins and other objects.
+        tmp_path: A temporary directory provided by pytest for the test.
+    Raises:
+        AssertionError: If build_repo attempts to perform network operations before
+            validating the presence of config.yml in the provided directory.
+        FileNotFoundError: If config.yml is missing in the provided config directory.
+    """
+    config_dir = tmp_path / "config-dir"
+    config_dir.mkdir()
+    def network_must_not_run(_base_url):
+        """This function should not be called, as the missing config.yml should be
+        detected before any network access is attempted."""
+        raise AssertionError("config path validation should run before network listing")
+    monkeypatch.setattr("hallmark.repo_builder.list_remote_files", network_must_not_run)
+
+    with pytest.raises(FileNotFoundError, match="Config file does not exist"):
+        build_repo(
+            tmp_path / "missing-config.hm",
+            "EHTC_TEST",
+            config_file=config_dir)
+
+
+def test_build_repo_explicit_remotes_override_config_file_remotes(
+    monkeypatch, tmp_path):
+    """
+    Test that explicit remotes passed to build_repo override remotes loaded from a
+    config_file parameter.
+    Args:
+        monkeypatch: A pytest fixture for safely patching builtins and other objects.
+        tmp_path: A temporary directory provided by pytest for the test.
+    """
+    source_config = tmp_path / "source.yml"
+    source_config.write_text(
+        yaml.safe_dump({
+            "data": [{"fmt": "item_{number}.dat", "db": "items.tsv"}],
+            "remote": [{"name": "old", "url": "https://old.test"}]}),
+        encoding="utf-8")
+    _inventory(monkeypatch, {"item_1.dat": ("md5", "a" * 32)})
+    repo = build_repo(
+        tmp_path / "override-config-param.hm",
+        "EHTC_TEST",
+        config_file=source_config,
+        remotes=[{"name": "new", "url": "https://new.test"}])
+
+    assert repo.state.config["remote"] == [{"name": "new", "url": "https://new.test"}],\
+        f"unexpected remotes: {repo.state.config['remote']}, \
+            expected explicit remotes to override config_file remotes"

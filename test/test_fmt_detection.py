@@ -15,10 +15,12 @@ from hallmark.fmt_detection import (
     _collapse_freeform_tails,
     _rescue_unmatched_paths,
     _align,
+    _generic_param_names,
     merge_fmts_sharing_all_literals,
     scan_inventory,
     combine_alike_fmts,
     detect_fmt)
+
 
 ### token and delim tests ###
 
@@ -377,6 +379,63 @@ def test_align_requires_genuine_literal_evidence():
         f"expected no genuine literal evidence, got {aligned}"
 
 
+### _generic_param_names tests ###
+
+def test_generic_param_names_fills_smallest_gap_first():
+    """
+    Test that _generic_param_names yields the smallest unused "pN" name first,
+    filling gaps in already-used numbers before continuing past them.
+    """
+    names = _generic_param_names(["a", "{p0}", "{p2}"])
+    result = [next(names) for _ in range(3)]
+
+    assert result == ["p1", "p3", "p4"], \
+        f"expected gap-filling order p1, p3, p4, got {result}"
+
+
+def test_generic_param_names_scans_all_provided_token_lists():
+    """
+    Test that _generic_param_names treats multiple token_lists as a combined set
+    of already-used numbers, not just the first list.
+    """
+    result = next(_generic_param_names(["{p0}"], ["{p1}"]))
+
+    assert result == "p2", \
+        f"expected p2 after combining used numbers from both lists, got {result}"
+
+
+def test_generic_param_names_used_override_ignores_token_lists():
+    """
+    Test that an explicit used= set overrides scanning token_lists entirely, even
+    when it is an empty set (falsy but not None).
+    """
+    result = next(_generic_param_names(["{p5}", "{p6}"], used=set()))
+
+    assert result == "p0", \
+        f"expected used= to override token scanning and yield p0, got {result}"
+
+
+def test_generic_param_names_used_override_respects_provided_numbers():
+    """
+    Test that an explicit used= set is honored as the set of already-used numbers.
+    """
+    result = next(_generic_param_names(used={0, 1}))
+
+    assert result == "p2", f"expected p2 given used={{0, 1}}, got {result}"
+
+
+def test_generic_param_names_sequential_calls_avoid_each_other():
+    """
+    Test that repeated next() calls on the same generator instance each avoid all
+    previously yielded names, not just the ones scanned at creation.
+    """
+    names = _generic_param_names([])
+    result = [next(names) for _ in range(3)]
+
+    assert result == ["p0", "p1", "p2"], \
+        f"expected sequential p0, p1, p2, got {result}"
+
+
 ### merge_fmts_sharing_all_literals tests ###
 
 def test_merge_fmts_sharing_all_literals_preserves_source_coverage():
@@ -394,6 +453,24 @@ def test_merge_fmts_sharing_all_literals_preserves_source_coverage():
     covered_paths = set().union(*(_parsed_paths(fmt, paths) for fmt in merged))
     assert covered_paths == set(paths), \
         f"expected merged fmts to cover all source paths, got {covered_paths}"
+
+
+def test_merge_fmts_sharing_all_literals_renumbers_multiple_params_sequentially():
+    """
+    Test that merge_fmts_sharing_all_literals's trailing renumbering pass compacts
+    multiple generic params to sequential {p0}, {p1}, ... in left-to-right order,
+    even when the merge itself produced non-sequential numbers internally (here,
+    reusing the second source fmt's {p2}/{p3} names rather than the first's {p0}/{p1}).
+    """
+    paths = ["x_a_mid_b_tail.dat", "x_c_mid_d_tail.dat"]
+    source_fmts = ["x_{p0}_mid_{p1}_tail.dat", "x_{p2}_mid_{p3}_tail.dat"]
+    merged = merge_fmts_sharing_all_literals(source_fmts, paths)
+
+    assert merged == ["x_{p0}_mid_{p1}_tail.dat"], \
+        f"expected params renumbered sequentially left-to-right, got {merged}"
+    covered_paths = set().union(*(_parsed_paths(fmt, paths) for fmt in merged))
+    assert covered_paths == set(paths), \
+        f"expected merged fmt to cover all source paths, got {covered_paths}"
 
 
 ### scan_inventory tests ###
@@ -453,6 +530,7 @@ def test_scan_inventory_ignores_dot_hm(tmp_path):
     result = scan_inventory(tmp_path)
 
     assert result == ["visible.csv"], f"expected only visible.csv, got {result}"
+
 
 def test_scan_inventory_returns_empty_list_for_empty_root(tmp_path):
     """
@@ -535,6 +613,17 @@ def test_combine_alike_fmts_keeps_single_format_as_is():
 
     assert result == ["sgra_{p0}_chandra"], \
         f"expected single fmt to remain unchanged, got {result}"
+
+
+def test_combine_alike_fmts_does_not_merge_on_non_discriminative_tag_only():
+    """
+    Non-discriminative tags (like format) must not trigger merging by themselves.
+    """
+    fmts = ["{p0}_{p1}.fits", "{p0}_{p1}.tar"]
+    result = combine_alike_fmts(fmts, known_param_tags={"{p0}_{p1}.fits": {"format"},
+                                                        "{p0}_{p1}.tar": {"format"}})
+
+    assert result == fmts, f"expected formats to remain separate, got {result}"
 
 
 ### detect_fmt tests ###
@@ -704,6 +793,43 @@ def test_detect_fmt_anchor_preserves_multiple_structural_families():
     assert set(detect_fmt(paths)) == {"image_{p0}.{p1}", "{p0}-image.{p1}"}, \
         f"expected multiple structural families to be preserved, \
             got {detect_fmt(paths)}"
+
+
+def test_detect_fmt_excludes_drives_but_keeps_non_drive_candidates():
+    """
+    Drive/archive files should be filtered out while regular data files still drive
+    format detection when include_drives=False.
+    """
+    files = ["bundle_a.tar", "bundle_b.tar", "data_001.fits", "data_002.fits"]
+    fmts = detect_fmt(files)
+
+    assert fmts == ["data_{scan}.fits"], \
+        f"expected only non-drive fmt detection, got {fmts}"
+    assert all(".tar" not in fmt for fmt in fmts), \
+        f"expected no drive formats when include_drives=False, got {fmts}"
+
+
+def test_detect_fmt_ignores_extensionless_known_static_file_stems():
+    """
+    Known static file stems should be ignored even when no extension is present.
+    """
+    files = ["README", "LICENSE", "data_001.fits", "data_002.fits"]
+    fmts = detect_fmt(files)
+
+    assert fmts == ["data_{scan}.fits"], \
+        f"expected static stems without extensions to be ignored, got {fmts}"
+    assert all("README" not in fmt and "LICENSE" not in fmt for fmt in fmts), \
+        f"expected no static stem formats, got {fmts}"
+
+
+def test_detect_fmt_anchor_requires_repeated_structure_not_singletons():
+    """
+    Anchor expansion should not create formats when each structural family appears once.
+    """
+    paths = ["image", "image_001.fits", "thumb-image.txt"]
+
+    assert detect_fmt(paths) == [], f"expected no anchor-derived fmt from singleton \
+        families, got {detect_fmt(paths)}"
 
 
 ### known limitation tests ###

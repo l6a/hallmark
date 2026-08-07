@@ -87,19 +87,19 @@ class ParaFrame(pd.DataFrame):
             return ParaFrame(*args, **kwargs)
         return _c
 
-    def __call__(self, **kwds):
+    def __call__(self, **kwargs):
         """
         Filter the ``ParaFrame``.
 
         Equivalent to calling :meth:`filter`.
 
         Args:
-            **kwds: Column names and values used for filtering.
+            **kwargs: Column names and values used for filtering.
 
         Returns:
             pandas.DataFrame: The filtered ``ParaFrame``.
         """
-        return self.filter(**kwds)
+        return self.filter(**kwargs)
 
     def filter(self, **kwargs):
         """
@@ -132,6 +132,80 @@ class ParaFrame(pd.DataFrame):
             mask |= condition.fillna(False)
         # Return a new DataFrame containing only the rows that satisfy the mask
         return self[mask]
+
+    @staticmethod
+    def _resolve_encoding_spec(fmt, encodings, *, encoding):
+        """
+        Used by glob_search.
+        Resolve the YAML encoding spec that applies to fmt, when encoding=True.
+
+        Args:
+            fmt: The format string being searched with.
+            encodings: Encoding specifications from config.yml (a mapping or
+                sequence of mappings), or None.
+            encoding: If False, no encoding lookup is performed.
+
+        Returns:
+            (yaml_encodings, fmt_enc): the matched encoding spec dict (``{}`` when
+            encoding is False), and the specific fmt template used to look it up
+            (fmt itself, unless a narrower entry_fmt matched within fmt).
+
+        Raises:
+            ValueError: If encodings is malformed, or no matching/valid encoding
+                spec can be found for fmt.
+        """
+        if not encoding:
+            return {}, fmt
+
+        # if no encodings are provided, use an empty list
+        if encodings is None:
+            encoding_specs = []
+        # if encodings is a dictionary, wrap it in a list
+        elif isinstance(encodings, dict):
+            encoding_specs = [encodings]
+        # try to convert encodings to a list; if it fails, raise a ValueError
+        else:
+            try:
+                encoding_specs = list(encodings)
+            except TypeError as exc:
+                raise ValueError(
+                    "encodings must be a mapping or sequence of mappings") from exc
+        # if any entry in encoding_specs is not a dictionary, raise a ValueError
+        if not all(isinstance(entry, dict) for entry in encoding_specs):
+            raise ValueError("encodings must contain only dictionaries")
+
+        fmt_enc = fmt
+        for entry in encoding_specs:
+            entry_fmt = entry.get("fmt")
+            # if entry_fmt is a non-empty string and in the provided format string
+            if (isinstance(entry_fmt, str) and entry_fmt and entry_fmt in fmt):
+                # use this entry's format for encoding
+                fmt_enc = entry_fmt
+                # break after finding the first matching entry
+                break
+
+        # find the encoding specification corresponding to fmt_enc
+        yaml_encodings = find_spec_by_fmt(fmt_enc, encoding_specs)
+        # raise a ValueError if no encoding specification is found for fmt_enc
+        if yaml_encodings is None:
+            raise ValueError(
+                f"Error: The format '{fmt_enc}' is missing "
+                "from hallmark.yml.")
+        # get the encoding dictionary from the found specification
+        enc_dict = yaml_encodings.get("encoding", {})
+        # if enc_dict is not a dictionary, raise a ValueError
+        if not isinstance(enc_dict, dict):
+            raise ValueError(
+                f"Encoding for '{fmt_enc}' must be a dictionary.")
+        # check if all values in enc_dict are strings; if not, raise a ValueError
+        if not all(isinstance(pattern, str) for pattern in enc_dict.values()):
+            raise ValueError(f"Encoding patterns for '{fmt_enc}' must be strings.")
+        # if enc_dict is empty or all values are empty strings, raise a ValueError
+        if not any(pattern for pattern in enc_dict.values()):
+            raise ValueError(
+                f"'{fmt_enc}' has no regex spec; use encoding=False.")
+
+        return yaml_encodings, fmt_enc
 
     @classmethod
     def glob_search(
@@ -196,59 +270,8 @@ class ParaFrame(pd.DataFrame):
         # three characters '{p}'; the maximum number
         # of possible parameters is `len(fmt) // 3`.
 
-        fmt_enc = fmt
-        # if encoding is requested, find the corresponding encoding specification
-        if encoding:
-            # if no encodings are provided, use an empty list
-            if encodings is None:
-                encoding_specs = []
-            # if encodings is a dictionary, wrap it in a list
-            elif isinstance(encodings, dict):
-                encoding_specs = [encodings]
-            # try to convert encodings to a list; if it fails, raise a ValueError
-            else:
-                try:
-                    encoding_specs = list(encodings)
-                except TypeError as exc:
-                    raise ValueError(
-                        "encodings must be a mapping or sequence of mappings") from exc
-            # if any entry in encoding_specs is not a dictionary, raise a ValueError
-            if not all(isinstance(entry, dict) for entry in encoding_specs):
-                raise ValueError("encodings must contain only dictionaries")
-
-            for entry in encoding_specs:
-                entry_fmt = entry.get("fmt")
-                # if entry_fmt is a non-empty string and in the provided format string
-                if (isinstance(entry_fmt, str) and entry_fmt and entry_fmt in fmt):
-                    # use this entry's format for encoding
-                    fmt_enc = entry_fmt
-                    # break after finding the first matching entry
-                    break
-
-            # find the encoding specification corresponding to fmt_enc
-            yaml_encodings = find_spec_by_fmt(fmt_enc, encoding_specs)
-            # raise a ValueError if no encoding specification is found for fmt_enc
-            if yaml_encodings is None:
-                raise ValueError(
-                    f"Error: The format '{fmt_enc}' is missing "
-                    "from hallmark.yml.")
-            # get the encoding dictionary from the found specification
-            enc_dict = yaml_encodings.get("encoding", {})
-            # if enc_dict is not a dictionary, raise a ValueError
-            if not isinstance(enc_dict, dict):
-                raise ValueError(
-                    f"Encoding for '{fmt_enc}' must be a dictionary.")
-            # check if all values in enc_dict are strings; if not, raise a ValueError
-            if not all(isinstance(pattern, str) for pattern in enc_dict.values()):
-                raise ValueError(f"Encoding patterns for '{fmt_enc}' must be strings.")
-            # if enc_dict is empty or all values are empty strings, raise a ValueError
-            if not any(pattern for pattern in enc_dict.values()):
-                raise ValueError(
-                    f"'{fmt_enc}' has no regex spec; use encoding=False.")
-
-        # if encoding is not requested, set yaml_encodings to an empty dictionary
-        else:
-            yaml_encodings = {}
+        yaml_encodings, fmt_enc = cls._resolve_encoding_spec(
+            fmt, encodings, encoding=encoding)
 
         # pattern = base + fmt
         pattern = str(base_path / fmt.lstrip("/"))

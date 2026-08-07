@@ -3,6 +3,7 @@ from pathlib import Path
 import pandas as pd
 import pytest
 import os
+from git import Repo as GitRepo
 from git.exc import GitCommandError
 
 from hallmark import Repo, ParaFrame
@@ -31,7 +32,8 @@ from hallmark.repo_manifest import (
     manifest_map)
 from hallmark.repo_state import (
     _parse_data_tsv,
-    load_branch_data)
+    load_branch_data,
+    load_head_state)
 
 ### standard pf tests ###
 
@@ -180,15 +182,32 @@ def test_repo_initializes_download_result(tmp_path):
     assert repo.download_result is None, \
         "Expected download_result to be None after initialization"
 
+def test_repo_commit_succeeds(hallmark_test_suite_dictionary):
+    assert hallmark_test_suite_dictionary["commit_result"] is True
+
+def test_data_tsv_and_worktree_reconstruction(hallmark_test_suite_dictionary):
+    repo = Repo(hallmark_test_suite_dictionary["repo_path"])
+    assert len(repo.state.data) == 12
+    assert repo.worktree.stem == "repo"
+
+
+def _write_files(root, names):
+    for name in names:
+        (root / name).write_text(f"{name}\n", encoding="utf-8")
+
+
+### Repo.add tests ###
 
 def test_repo_add_result_has_expected_length(hallmark_test_suite_dictionary):
     result = hallmark_test_suite_dictionary["add_result"]
     assert len(result) == 12
 
+
 def test_repo_add_result_paths_match_standard_files(hallmark_test_suite_dictionary):
     result = hallmark_test_suite_dictionary["add_result"]
     assert sorted(result["path"]) == sorted(
         hallmark_test_suite_dictionary["standard_files"])
+
 
 def test_repo_add_rejects_symlink_escape(tmp_path):
     """
@@ -213,6 +232,7 @@ def test_repo_add_rejects_symlink_escape(tmp_path):
 
     with pytest.raises(ValueError, match="symbolic link"):
         repo.add("linked/a{a}_i{i}.h5")
+
 
 def test_repo_add_format_hashes_files_in_one_batch(monkeypatch, tmp_path):
     """
@@ -244,20 +264,6 @@ def test_repo_add_format_hashes_files_in_one_batch(monkeypatch, tmp_path):
         repo.worktree / "data_1.txt", repo.worktree / "data_2.txt"}, \
         "Expected checksum_many to be called once with both files in one batch"
 
-def test_repo_commit_succeeds(hallmark_test_suite_dictionary):
-    assert hallmark_test_suite_dictionary["commit_result"] is True
-
-def test_data_tsv_and_worktree_reconstruction(hallmark_test_suite_dictionary):
-    repo = Repo(hallmark_test_suite_dictionary["repo_path"])
-    assert len(repo.state.data) == 12
-    assert repo.worktree.stem == "repo"
-
-
-def _write_files(root, names):
-    for name in names:
-        (root / name).write_text(f"{name}\n", encoding="utf-8")
-
-### Repo.add() tests ###
 
 def test_repo_add_persists_only_sha1_and_path(tmp_path):
     repo = Repo.init(tmp_path / "repo")
@@ -328,6 +334,7 @@ def test_repo_add_dot_from_nested_directory_uses_path_components(monkeypatch, tm
     assert repo.state.data["number"].tolist() == ["1"], f"Expected 'number' column to \
         contain only '1', got {repo.state.data['number'].tolist()}"
 
+
 def test_repo_add_pattern_keeps_deleted_manifest_rows(tmp_path):
     repo = Repo.init(tmp_path / "repo")
     _write_files(repo.worktree, ["a0_i0.h5", "a0_i30.h5"])
@@ -385,6 +392,7 @@ def test_repo_add_preserves_config_order_and_remote_key(tmp_path):
     assert "data:\n- fmt: a{a}_i{i}.h5\n  encoding: null\n" in config_text
     assert "remote: null\n" in config_text
 
+
 def test_repo_add_parse_failure_preserves_existing_format(monkeypatch, tmp_path):
     """
     Test that if ParaFrame.parse() fails during Repo.add(), the existing format in the
@@ -412,6 +420,7 @@ def test_repo_add_parse_failure_preserves_existing_format(monkeypatch, tmp_path)
     assert repo.dothm.load_yml("config")["data"][0]["fmt"] == "old_{number}.txt", \
         "Expected the original format to be preserved in the config file"
 
+
 @pytest.mark.parametrize("fmt", ["", "   ", None])
 def test_repo_add_rejects_empty_format(tmp_path, fmt):
     """
@@ -430,7 +439,8 @@ def test_repo_add_rejects_empty_format(tmp_path, fmt):
     with pytest.raises(ValueError, match="format must be a non-empty string"):
         repo.add(fmt)
 
-### Repo.set_config() tests ###
+
+### Repo.set_config tests ###
 
 def test_repo_set_config_updates_only_requested_fields(tmp_path):
     repo = Repo.init(tmp_path / "repo")
@@ -489,6 +499,7 @@ def test_repo_set_config_creates_or_updates_encoding_map(tmp_path):
         "remote": None,
     }
 
+
 def test_repo_set_config_updates_selected_remote_in_list(tmp_path):
     """
     Test that Repo.set_config() updates the specified remote in a list of remotes
@@ -508,6 +519,67 @@ def test_repo_set_config_updates_selected_remote_in_list(tmp_path):
         {"name": "origin", "url": "https://origin.test/data"},
         {"name": "mirror", "url": "https://new-mirror.test/data"}], "Expected the \
             'mirror' remote to be updated while preserving the 'origin' remote"
+
+
+def test_repo_set_config_rejects_nonlist_nondict_remote_config(tmp_path):
+    """
+    Test that Repo.set_config() raises a ValueError when the existing "remote"
+    config value is neither a mapping nor a list (e.g. a bare string), since it
+    cannot be normalized into a remote list to update.
+    Args:
+        tmp_path: pytest fixture that provides a temporary directory for the test.
+    Raises:
+        ValueError: If the existing "remote" config value is not a mapping or list.
+    """
+    repo = Repo.init(tmp_path / "repo")
+    repo.state.config["remote"] = "not-a-mapping-or-list"
+    repo.dothm.dump(repo.state)
+
+    with pytest.raises(ValueError, match="Invalid remote configuration"):
+        repo.set_config(remote_url="https://example.test/data")
+
+
+def test_repo_set_config_rejects_unknown_remote_name_without_url(tmp_path):
+    """
+    Test that Repo.set_config() raises a ValueError when multiple remotes are
+    configured, remote_name does not match any of them, and no remote_url is
+    given to create a new remote entry.
+    Args:
+        tmp_path: pytest fixture that provides a temporary directory for the test.
+    Raises:
+        ValueError: If remote_name does not match an existing remote and no
+        remote_url is provided.
+    """
+    repo = Repo.init(tmp_path / "repo")
+    repo.state.config["remote"] = [
+        {"name": "origin", "url": "https://origin.test/data"},
+        {"name": "mirror", "url": "https://mirror.test/data"}]
+    repo.dothm.dump(repo.state)
+
+    with pytest.raises(ValueError, match="'missing' is not configured"):
+        repo.set_config(remote_name="missing")
+
+
+def test_repo_set_config_requires_remote_name_when_no_origin(tmp_path):
+    """
+    Test that Repo.set_config() raises a ValueError when multiple remotes are
+    configured, no remote_name is given, and none of the remotes is named
+    "origin" to default to.
+    Args:
+        tmp_path: pytest fixture that provides a temporary directory for the test.
+    Raises:
+        ValueError: If multiple remotes are configured without a default "origin"
+        and remote_name is not specified.
+    """
+    repo = Repo.init(tmp_path / "repo")
+    repo.state.config["remote"] = [
+        {"name": "mirror-a", "url": "https://mirror-a.test/data"},
+        {"name": "mirror-b", "url": "https://mirror-b.test/data"}]
+    repo.dothm.dump(repo.state)
+
+    with pytest.raises(ValueError, match="specify --remote-name"):
+        repo.set_config(remote_url="https://new.test/data")
+
 
 @pytest.mark.parametrize("fmt", ["", "   ", 123])
 def test_repo_set_config_rejects_invalid_format(tmp_path, fmt):
@@ -531,6 +603,7 @@ def test_repo_set_config_rejects_invalid_format(tmp_path, fmt):
         "Expected the original format to be preserved in the config file"
     assert repo.dothm.load_yml("config")["data"][0]["fmt"] == ("data_{number}.txt"), \
         "Expected the original format to be preserved in the config file"
+
 
 @pytest.mark.parametrize(
     "encoding_updates, message",[
@@ -578,6 +651,7 @@ def test_repo_set_config_normalizes_encoding_updates(tmp_path):
 
     assert repo.state.config["data"][0]["encoding"] == {"number": r"[0-9]+"}, \
         "Expected the encoding updates to be normalized in the config file"
+
 
 @pytest.mark.parametrize(
     "keyword, value, message",[(
@@ -660,7 +734,8 @@ def test_repo_set_config_rejects_nonmapping_config(tmp_path):
     with pytest.raises(ValueError, match="repository config must be a mapping"):
         repo.set_config(fmt="data_{number}.txt")
 
-### Repo.status() tests ###
+
+### Repo.status tests ###
 
 def test_repo_status_reports_staged_worktree_and_untracked_changes(tmp_path):
     repo = Repo.init(tmp_path / "repo")
@@ -701,6 +776,7 @@ def test_repo_status_reports_staged_manifest_changes(tmp_path):
     assert snapshot["staged"]["modified"] == []
     assert snapshot["staged"]["deleted"] == []
 
+
 def test_repo_status_hashes_tracked_files_in_one_batch(monkeypatch, tmp_path):
     """
     Test that the Repo.status() method calls checksum_many once for all tracked files.
@@ -733,6 +809,7 @@ def test_repo_status_hashes_tracked_files_in_one_batch(monkeypatch, tmp_path):
         repo.worktree / "data_1.txt", repo.worktree / "data_2.txt"}, \
         f"checksum_many should be called with all tracked files, got {calls[0]}"
 
+
 def test_repo_status_lists_all_untracked_files_from_nested_cwd(monkeypatch, tmp_path):
     """
     Test that Repo.status() lists all untracked files relative to the repository root,
@@ -761,6 +838,7 @@ def test_repo_status_lists_all_untracked_files_from_nested_cwd(monkeypatch, tmp_
     assert snapshot["untracked"] == ["nested/nested-note.txt", "root-note.txt"], \
         "Expected untracked files to be listed relative to the repository root, even \
             when called from a nested directory"
+
 
 def test_repo_status_does_not_walk_dothm_directory(monkeypatch, tmp_path):
     """
@@ -795,7 +873,7 @@ def test_repo_status_does_not_walk_dothm_directory(monkeypatch, tmp_path):
         "Expected .hm directory to be pruned from os.walk, but it was walked"
 
 
-### Repo.checkout() tests ###
+### Repo.checkout tests ###
 
 def test_checkout_rewrites_tracked_files_and_shares_objects(tmp_path):
     repo = Repo.init(tmp_path / "repo")
@@ -930,6 +1008,7 @@ def test_checkout_allows_return_to_branch_when_target_files_already_match(tmp_pa
         "a0_i0.h5",
     ]
 
+
 def test_checkout_rejects_symlink_destination_escape(tmp_path):
     """
     Test that checking out a branch fails if a symlink in the worktree points outside
@@ -970,6 +1049,7 @@ def test_checkout_rejects_symlink_destination_escape(tmp_path):
     assert list(outside.iterdir()) == [], \
         f"Expected outside directory to be empty, but found: {list(outside.iterdir())}"
 
+
 def test_checkout_hashes_tracked_files_in_one_batch(monkeypatch, tmp_path):
     """
     Test that the Repo.checkout() method calls checksum_many once for all tracked files.
@@ -1001,6 +1081,7 @@ def test_checkout_hashes_tracked_files_in_one_batch(monkeypatch, tmp_path):
         repo.worktree / "data_1.txt", repo.worktree / "data_2.txt"}, \
         f"checksum_many should be called with all tracked files, got {calls[0]}"
 
+
 @pytest.mark.parametrize(
     "branch_name",[
         "",
@@ -1025,6 +1106,7 @@ def test_checkout_rejects_invalid_branch_names(tmp_path, branch_name):
 
     with pytest.raises(ValueError, match="branch name"):
         repo.checkout(branch_name)
+
 
 def test_checkout_checks_target_objects_before_switching_branch(tmp_path):
     """
@@ -1062,6 +1144,7 @@ def test_checkout_checks_target_objects_before_switching_branch(tmp_path):
     assert data_path.read_text(encoding="utf-8") == "main contents\n", \
         "Expected worktree to remain unchanged after failed checkout"
 
+
 def test_checkout_rejects_directory_at_target_file_path(tmp_path):
     """
     Test that the Repo.checkout() method raises a CheckoutError when a directory exists
@@ -1094,6 +1177,7 @@ def test_checkout_rejects_directory_at_target_file_path(tmp_path):
         'main', but found: {repo.dothm.active_branch.name}"
     assert experiment_path.is_dir(), \
         f"Expected {experiment_path} to remain a directory after failed checkout"
+
 
 def test_checkout_rolls_back_after_install_failure(monkeypatch, tmp_path):
     """
@@ -1190,6 +1274,7 @@ def test_checkout_restores_only_changed_target_files(monkeypatch, tmp_path):
     assert (repo.worktree / "data_2.txt").is_file(), \
         "Expected data_2.txt to remain unchanged after checkout"
 
+
 ### Repo.clone() tests ###
 
 def test_repo_clone_downloads_remote_data_by_default(monkeypatch, tmp_path):
@@ -1240,6 +1325,7 @@ def test_repo_clone_can_skip_remote_data_download(monkeypatch, tmp_path):
     assert not (clone.worktree / "a0_i0.h5").exists()
     assert clone.download_result is None
 
+
 def test_repo_clone_removes_incomplete_destination(tmp_path):
     """
     Test that Repo.clone() removes the destination directory if the clone operation
@@ -1263,6 +1349,7 @@ def test_repo_clone_removes_incomplete_destination(tmp_path):
         Repo.clone(str(source.dothm.path), destination, fetch_data=False)
     assert not destination.exists(), f"Expected incomplete clone destination \
         {destination} to be removed after failed clone attempt"
+
 
 ### dothm tests ###
 
@@ -1300,6 +1387,7 @@ def test_dothm_load_treats_empty_yaml_as_empty_mapping(tmp_path):
         f"Expected loaded meta to be an empty dict, got {loaded_state.meta}"
     assert isinstance(loaded_state.meta, dict), \
         f"Expected loaded meta to be a dict, got {type(loaded_state.meta)}"
+
 
 def test_dump_yml_preserves_existing_file_when_serialization_fails(monkeypatch,
                                                                    tmp_path):
@@ -1358,8 +1446,6 @@ def test_dump_tsv_supports_missing_value_representation(tmp_path):
             got:\n{output_path.read_text(encoding='utf-8')}"
 
 
-### load yaml tests ###
-
 @pytest.mark.parametrize(
     "source", ["- first\n- second\n", "plain text\n", "123\n", "true\n"])
 def test_load_yaml_rejects_non_mapping_documents(source):
@@ -1387,6 +1473,90 @@ def test_load_yaml_accepts_mapping_and_empty_document():
         "Expected YAML mapping to be loaded correctly"
     assert load_yaml("") == {}, \
         "Expected empty YAML document to be treated as an empty mapping"
+
+
+def test_load_tsv_preserves_na_tokens_and_blank_values(tmp_path):
+    """
+    Test that Dothm.load_tsv correctly preserves 'NA' tokens and blank values when
+    loading a TSV file. This test creates a repository, writes a TSV file with 'NA'
+    and blank values, and then loads it using Dothm.load_tsv. It checks that the
+    resulting DataFrame has the expected values.
+    Args:
+        tmp_path: pytest fixture that provides a temporary directory for the test.
+    """
+    repo = Repo.init(tmp_path / "repo")
+    table_path = repo.dothm.path / "literal.tsv"
+    table_path.write_text("sha1\tname\n""first\tNA\n""second\t\n", encoding="utf-8")
+    frame = repo.dothm.load_tsv("literal")
+
+    assert frame["name"].tolist() == ["NA", ""], \
+        f"Expected ['NA', ''], got {frame['name'].tolist()}"
+
+
+def test_dothm_init_does_not_overwrite_existing_readme(tmp_path):
+    """
+    Test that Dothm.init does not overwrite an existing README.md file in the repository
+    This test creates a Dothm repository, writes custom contents to the README.md file,
+    and then calls Dothm.init again. It checks that the README.md file remains unchanged
+    Args:
+        tmp_path: pytest fixture that provides a temporary directory for the test.
+    """
+    path = tmp_path / "repo.hm"
+    dothm = Dothm.init(path)
+    readme_path = dothm.path / "README.md"
+    readme_path.write_text("custom contents\n", encoding="utf-8")
+    Dothm.init(path)
+
+    assert readme_path.read_text(encoding="utf-8") == "custom contents\n", f"Expected \
+        README.md to remain unchanged, got {readme_path.read_text(encoding='utf-8')}"
+
+
+@pytest.mark.parametrize("stem", ["../outside", "/tmp/outside", "nested/file"])
+def test_dothm_storage_rejects_noncomponent_names(tmp_path, stem):
+    """
+    Test that Dothm.load_yml raises a ValueError when given a stem that is not a valid
+    component name. This test checks that the method correctly identifies invalid stems
+    that attempt to escape the repository structure or use absolute paths.
+    Args:
+        tmp_path: pytest fixture that provides a temporary directory for the test.
+        stem: A parameterized invalid stem to test.
+    Raises:
+        ValueError: If the stem is not a valid component name
+        (e.g., contains path separators or is absolute).
+    """
+    repo = Repo.init(tmp_path / "repo")
+
+    with pytest.raises(ValueError, match="storage name"):
+        repo.dothm.load_yml(stem)
+
+
+def test_dothm_init_rejects_bare_repository(tmp_path):
+    """
+    Test that Dothm.init raises a DothmError when asked to create a bare git
+    repository, since a ".hm" directory must be a valid git worktree.
+    Args:
+        tmp_path: pytest fixture that provides a temporary directory for the test.
+    Raises:
+        DothmError: If bare=True is passed to Dothm.init.
+    """
+    with pytest.raises(DothmError, match="must not be a bare"):
+        Dothm.init(tmp_path / "repo.hm", bare=True)
+
+
+def test_dothm_rejects_opening_bare_git_repository(tmp_path):
+    """
+    Test that opening an existing bare git repository as a Dothm raises a
+    DothmError, since a ".hm" directory must be a valid git worktree.
+    Args:
+        tmp_path: pytest fixture that provides a temporary directory for the test.
+    Raises:
+        DothmError: If the path is a bare git repository with no working tree.
+    """
+    path = tmp_path / "bare.hm"
+    GitRepo.init(path, bare=True)
+
+    with pytest.raises(DothmError, match="valid git worktree"):
+        Dothm(path)
 
 
 ### iter_repository_files tests ###
@@ -1459,6 +1629,7 @@ def test_tracked_file_replaced_by_directory_is_reported_missing(tmp_path):
     with pytest.raises(CheckoutError, match="is missing"):
         repo.checkout("experiment")
 
+
 def test_tracked_file_replaced_by_symlink_is_reported_missing(tmp_path):
     """
     Test that if a tracked file is replaced by a symbolic link in the worktree, the
@@ -1492,6 +1663,7 @@ def test_tracked_file_replaced_by_symlink_is_reported_missing(tmp_path):
     assert outside_path.read_text(encoding="utf-8") == "outside\n", f"Expected outside \
         file to remain unchanged, got {outside_path.read_text(encoding='utf-8')}"
 
+
 ### object store tests ###
 
 def test_object_store_is_independent_from_worktree_files(tmp_path):
@@ -1519,6 +1691,7 @@ def test_object_store_is_independent_from_worktree_files(tmp_path):
         f"Expected 'original data\\n', got {stored.read_text(encoding='utf-8')}"
     assert Repo.checksum(stored) == sha1, \
         f"Expected SHA1 {sha1}, got {Repo.checksum(stored)}"
+
 
 @pytest.mark.parametrize(
     "invalid_sha1",[
@@ -1567,6 +1740,7 @@ def test_object_store_normalizes_sha1_case(tmp_path):
         f"Expected stored path {objects.root / sha1[:2] / sha1[2:]}, got {stored}"
     assert stored.is_file(), \
         f"Expected stored file at {stored}, but it does not exist."
+
 
 def test_object_store_rejects_corrupted_object_during_restore(tmp_path):
     """
@@ -1620,6 +1794,7 @@ def test_object_store_verifies_precomputed_sha1_while_copying(tmp_path):
     assert not objects.contains(sha1), \
         f"Expected object store to not contain {sha1} after failed store attempt"
 
+
 def test_object_store_reports_sorted_unique_missing_checksums(tmp_path):
     """
     Test that the Objects class reports missing checksums in sorted order and without
@@ -1670,7 +1845,7 @@ def test_object_store_rejects_invalid_precomputed_sha1(tmp_path, actual_sha1):
         objects.store(source, expected_sha1, actual_sha1=actual_sha1)
 
 
-### Repo.commit() tests ###
+### Repo.commit tests ###
 
 def test_commit_rejects_file_changed_after_add(tmp_path):
     """
@@ -1690,6 +1865,7 @@ def test_commit_rejects_file_changed_after_add(tmp_path):
         ValueError,
         match="changed after it was added"):
         repo.commit("commit staged data")
+
 
 def test_commit_checks_source_when_staged_object_already_exists(tmp_path):
     """
@@ -1714,6 +1890,7 @@ def test_commit_checks_source_when_staged_object_already_exists(tmp_path):
 
     with pytest.raises(ValueError, match="changed after it was added"):
         repo.commit("restore first version")
+
 
 def test_commit_hashes_tracked_files_once_in_parallel(monkeypatch, tmp_path):
     """
@@ -1758,6 +1935,7 @@ def test_commit_hashes_tracked_files_once_in_parallel(monkeypatch, tmp_path):
     assert all(repo.objects.contains(row["sha1"])
                for _, row in repo.state.data.iterrows()), \
         "All staged objects should exist in the object store after commit."
+
 
 def test_commit_hashes_only_manifest_rows_changed_since_head(monkeypatch, tmp_path):
     """
@@ -1840,7 +2018,8 @@ def test_readding_changed_file_allows_commit(tmp_path):
     assert repo.commit("commit updated data") is True, \
         "Expected commit to succeed after re-adding changed file."
 
-### row_to_path() tests ###
+
+### row_to_path tests ###
 
 def test_row_to_path_returns_safe_relative_path():
     """
@@ -1956,7 +2135,7 @@ def test_single_data_fmt(config, expected):
         to be {expected}, got {single_data_fmt(config)}"
 
 
-### Repo.add_worktree() tests ###
+### Repo.add_worktree tests ###
 
 def test_add_worktree_restores_target_branch_data(tmp_path):
     """
@@ -1982,6 +2161,7 @@ def test_add_worktree_restores_target_branch_data(tmp_path):
     linked_file = tmp_path / "experiment" / "data_1.txt"
     assert linked_file.read_text(encoding="utf-8") == "experiment contents\n", \
      f"Expected 'experiment contents\\n', got {linked_file.read_text(encoding='utf-8')}"
+
 
 def test_add_worktree_rejects_destination_escape(tmp_path):
     """
@@ -2019,6 +2199,7 @@ def test_add_worktree_rejects_current_worktree_destination(tmp_path):
     with pytest.raises(ValueError, match="cannot be the current worktree"):
         repo.add_worktree("repo")
 
+
 def test_add_worktree_preserves_unrelated_existing_destination(tmp_path):
     """
     Test that adding a worktree to an existing directory that is not a worktree
@@ -2043,6 +2224,7 @@ def test_add_worktree_preserves_unrelated_existing_destination(tmp_path):
     assert not (destination / ".hm").exists(), \
         f"Expected no .hm directory in {destination}, but found one."
 
+
 def test_add_worktree_rejects_invalid_data_config_before_creation(tmp_path):
     """
     Test that adding a worktree fails if the repo has an invalid data configuration.
@@ -2062,6 +2244,7 @@ def test_add_worktree_rejects_invalid_data_config_before_creation(tmp_path):
         repo.add_worktree("experiment")
     assert not destination.exists(), \
         f"Expected destination {destination} to not exist, but it does."
+
 
 def test_add_worktree_wraps_existing_branch_link_failure(monkeypatch, tmp_path):
     """
@@ -2091,6 +2274,7 @@ def test_add_worktree_wraps_existing_branch_link_failure(monkeypatch, tmp_path):
     assert not (tmp_path / "experiment").exists(), \
         f"Expected destination {tmp_path / 'experiment'} to not exist, but it does."
 
+
 def test_add_worktree_checks_for_missing_objects_before_creation(tmp_path):
     """
     Test that adding a worktree checks for missing objects in the object store before
@@ -2116,6 +2300,7 @@ def test_add_worktree_checks_for_missing_objects_before_creation(tmp_path):
     assert not destination.exists(), \
         f"Expected destination {destination} to not exist, but it does."
 
+
 @pytest.mark.parametrize(
     "branch_name",[
         "",
@@ -2138,6 +2323,7 @@ def test_add_worktree_rejects_invalid_branch_names(tmp_path, branch_name):
 
     with pytest.raises(ValueError, match="branch name"):
         repo.add_worktree(branch_name)
+
 
 def test_add_worktree_cleans_up_after_restore_failure(monkeypatch, tmp_path):
     """
@@ -2172,6 +2358,7 @@ def test_add_worktree_cleans_up_after_restore_failure(monkeypatch, tmp_path):
     assert str(target / ".hm") not in worktree_listing, f"Expected worktree \
         {target} to be removed from .hm/worktrees, but found: {worktree_listing}"
 
+
 def test_add_worktree_removes_new_branch_after_restore_failure(monkeypatch, tmp_path):
     """
     Test that if the objects.restore method fails during worktree creation, the
@@ -2200,6 +2387,7 @@ def test_add_worktree_removes_new_branch_after_restore_failure(monkeypatch, tmp_
     assert not (tmp_path / "experiment").exists(), \
         f"Expected destination {tmp_path / 'experiment'} to not exist, but it does."
 
+
 ### state tests ###
 
 def test_state_replace_empty_uses_incoming_schema():
@@ -2217,6 +2405,7 @@ def test_state_replace_empty_uses_incoming_schema():
     assert state.data.empty, "Expected state.data to be empty after replacement"
     assert list(state.data.columns) == ["sha1", "new_parameter"], \
         f"Expected columns ['sha1', 'new_parameter'], got {list(state.data.columns)}"
+
 
 def test_state_update_static_format_keeps_only_latest_row():
     """
@@ -2339,6 +2528,37 @@ def test_manifest_entries_share_canonical_path_generation():
             got {manifest_map(state)}"
 
 
+def test_manifest_entries_empty_when_config_has_no_data_fmt():
+    """
+    If config has no fmt entries, iter_manifest_entries should produce no rows and
+    manifest_map should be empty, even when state.data has rows.
+    """
+    state = State(config={"data": [{"file": "README.md"}]},
+                  data=pd.DataFrame({"sha1": ["ABC123"], "name": ["item"]}))
+
+    assert list(iter_manifest_entries(state)) == [], f"Expected no manifest entries \
+        when no data fmt exists, got {list(iter_manifest_entries(state))}"
+    assert manifest_map(state) == {}, f"Expected empty manifest map when no data fmt \
+        exists, got {manifest_map(state)}"
+
+
+def test_manifest_map_uses_explicit_fmt_override():
+    """
+    manifest_map should honor an explicit fmt argument even if config does not define
+    a data fmt.
+    """
+    state = State(
+        config={},
+        data=pd.DataFrame({
+            "sha1": ["ABC123"],
+            "folder": ["nested"],
+            "name": ["item"]}))
+    actual = manifest_map(state, fmt="{folder}/{name}.dat")
+
+    assert actual == {"nested/item.dat": "ABC123"}, \
+        f"Expected explicit fmt override mapping, got {actual}"
+
+
 ### repo_worktree tests ###
 
 def test_worktree_changes_accepts_uppercase_expected_checksum(tmp_path):
@@ -2375,6 +2595,41 @@ def test_parse_data_tsv_preserves_na_tokens_and_blank_values():
         f"Expected ['NA', ''], got {frame['name'].tolist()}"
 
 
+def test_parse_data_tsv_empty_text_returns_empty_state_schema():
+    """
+    Empty TSV text should parse to an empty DataFrame with the canonical State schema.
+    """
+    frame = _parse_data_tsv("   \n")
+
+    assert frame.empty, "Expected parsed frame to be empty for blank TSV text"
+    assert list(frame.columns) == ["sha1"], \
+        f"Expected canonical columns ['sha1'], got {list(frame.columns)}"
+
+
+def test_load_head_state_without_commits_uses_current_config_and_empty_data(tmp_path):
+    """
+    With no commits in .hm, load_head_state should return a copy of current config/meta
+    and an empty data table.
+    """
+    repo = Repo.init(tmp_path / "repo")
+    repo.state.config = {"data": [{"fmt": "data_{number}.txt"}]}
+    repo.state.meta = {"nested": {"value": "original"}}
+    repo.state.data = pd.DataFrame({"sha1": ["abc123"], "number": ["1"]})
+    head_state = load_head_state(repo)
+    head_state.config["data"][0]["fmt"] = "changed"
+    head_state.meta["nested"]["value"] = "changed"
+
+    assert head_state.data.empty, \
+        f"Expected empty data for no-commit HEAD fallback, got {head_state.data}"
+    assert list(head_state.data.columns) == ["sha1"], \
+        f"Expected canonical columns ['sha1'], got {list(head_state.data.columns)}"
+    assert repo.state.config["data"][0]["fmt"] == "data_{number}.txt", \
+        f"Expected original repo config to remain unchanged, \
+            got {repo.state.config['data'][0]['fmt']}"
+    assert repo.state.meta["nested"]["value"] == "original", f"Expected original repo \
+        meta to remain unchanged, got {repo.state.meta['nested']['value']}"
+
+
 def test_new_branch_state_is_independent_from_current_state(tmp_path):
     """
     Test that the state of a new branch is independent from the current branch's state.
@@ -2399,63 +2654,6 @@ def test_new_branch_state_is_independent_from_current_state(tmp_path):
         f"Expected meta value 'original', got {repo.state.meta['nested']['value']}"
     assert repo.state.data.loc[0, "number"] == "1", \
         f"Expected number '1', got {repo.state.data.loc[0, 'number']}"
-
-
-### Dothm tests ###
-
-def test_load_tsv_preserves_na_tokens_and_blank_values(tmp_path):
-    """
-    Test that Dothm.load_tsv correctly preserves 'NA' tokens and blank values when
-    loading a TSV file. This test creates a repository, writes a TSV file with 'NA'
-    and blank values, and then loads it using Dothm.load_tsv. It checks that the
-    resulting DataFrame has the expected values.
-    Args:
-        tmp_path: pytest fixture that provides a temporary directory for the test.
-    """
-    repo = Repo.init(tmp_path / "repo")
-    table_path = repo.dothm.path / "literal.tsv"
-    table_path.write_text("sha1\tname\n""first\tNA\n""second\t\n", encoding="utf-8")
-    frame = repo.dothm.load_tsv("literal")
-
-    assert frame["name"].tolist() == ["NA", ""], \
-        f"Expected ['NA', ''], got {frame['name'].tolist()}"
-
-
-def test_dothm_init_does_not_overwrite_existing_readme(tmp_path):
-    """
-    Test that Dothm.init does not overwrite an existing README.md file in the repository
-    This test creates a Dothm repository, writes custom contents to the README.md file,
-    and then calls Dothm.init again. It checks that the README.md file remains unchanged
-    Args:
-        tmp_path: pytest fixture that provides a temporary directory for the test.
-    """
-    path = tmp_path / "repo.hm"
-    dothm = Dothm.init(path)
-    readme_path = dothm.path / "README.md"
-    readme_path.write_text("custom contents\n", encoding="utf-8")
-    Dothm.init(path)
-
-    assert readme_path.read_text(encoding="utf-8") == "custom contents\n", f"Expected \
-        README.md to remain unchanged, got {readme_path.read_text(encoding='utf-8')}"
-
-
-@pytest.mark.parametrize("stem", ["../outside", "/tmp/outside", "nested/file"])
-def test_dothm_storage_rejects_noncomponent_names(tmp_path, stem):
-    """
-    Test that Dothm.load_yml raises a ValueError when given a stem that is not a valid
-    component name. This test checks that the method correctly identifies invalid stems
-    that attempt to escape the repository structure or use absolute paths.
-    Args:
-        tmp_path: pytest fixture that provides a temporary directory for the test.
-        stem: A parameterized invalid stem to test.
-    Raises:
-        ValueError: If the stem is not a valid component name
-        (e.g., contains path separators or is absolute).
-    """
-    repo = Repo.init(tmp_path / "repo")
-
-    with pytest.raises(ValueError, match="storage name"):
-        repo.dothm.load_yml(stem)
 
 
 ### Worktree tests ###

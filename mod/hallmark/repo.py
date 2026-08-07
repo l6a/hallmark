@@ -15,9 +15,7 @@
 
 from __future__ import annotations
 
-import os
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from shutil import rmtree
@@ -35,8 +33,10 @@ from .repo_state import load_branch_data, load_head_state
 from .error import CheckoutError, DestinationExistsError, DothmError
 from .helper_functions import (
     FILE_IO_CHUNK_SIZE,
+    chdir,
     iter_repository_files,
-    normalize_nonempty_string)
+    normalize_nonempty_string,
+    resolve_contained_path)
 from .repo_worktree import (
     ensure_clean_tracked_files,
     filtered_paraframe,
@@ -45,26 +45,9 @@ from .repo_worktree import (
 from .repo_config import (
     branch_encodings,
     branch_fmt,
-    resolve_contained_path,
     row_to_path,
     set_config,
     single_data_fmt)
-
-@contextmanager
-def chdir(path):
-    '''
-    Temporarily change the working directory within a context.
-
-    Args:
-        Path: Directory to dwitch to while inside the context.
-    '''
-    old = os.getcwd()
-    os.chdir(path)
-    try:
-        yield
-    finally:
-        os.chdir(old)
-
 
 @dataclass(init=False)
 class Repo:
@@ -122,6 +105,73 @@ class Repo:
         if dothm_objects.resolve() != main_objects.resolve() \
         and not dothm_objects.exists():
             dothm_objects.symlink_to(main_objects)
+
+    def _worktree_path(self, value, *, label: str = "tracked path") -> Path:
+        """
+        Used commit, checkout, and _populate_checksums.
+        Resolve a path relative to the repository's worktree.
+        Args:
+            value (str | Path): The path to resolve.
+            label (str): Label for error messages.
+        Returns:
+            Path: Resolved path within the worktree.
+        Raises:
+            RuntimeError: If the repository has no worktree.
+        """
+        # Validate that the repository has a worktree before resolving paths
+        if self.worktree is None:
+            raise RuntimeError(
+                "cannot resolve paths without a worktree")
+        return resolve_contained_path(self.worktree, value, label=label)
+
+    def _validate_branch_name(self, value) -> str:
+        """
+        Used by checkout and add_worktree
+        Validate and normalize a Git branch name.
+
+        Args:
+            value (str): The branch name to validate.
+
+        Returns:
+            str: The normalized branch name.
+
+        Raises:
+            ValueError: If the branch name is invalid.
+        """
+        # Normalize the branch name to ensure it is a non-empty string
+        branch_name = normalize_nonempty_string(value, label="branch name")
+        # if the branch name starts with a hyphen, raise a ValueError
+        if branch_name.startswith("-"):
+            raise ValueError(f"invalid branch name: {branch_name!r}")
+
+        # try to validate the branch name using Git's check_ref_format command
+        try:
+            self.dothm.git.check_ref_format("--branch", branch_name)
+        # if Git raises a GitCommandError, re-raise it as a ValueError
+        except GitCommandError as exc:
+            raise ValueError(f"invalid branch name: {branch_name!r}") from exc
+
+        # if all checks pass, return the normalized branch name
+        return branch_name
+
+    def _populate_checksums(self, pf: ParaFrame) -> None:
+        """
+        Used by add.
+        Populate the "sha1" column in a ParaFrame with SHA-1 checksums of the files.
+        Args:
+            pf (ParaFrame): The ParaFrame containing file paths.
+        """
+        # If the ParaFrame is empty, there are no files to process, so return early
+        if pf.empty:
+            return
+        # Resolve full paths for all files in the ParaFrame relative to the worktree
+        full_paths = [
+            self._worktree_path(path, label="matched data path")
+            for path in pf["path"].astype(str)]
+        # Compute SHA-1 checksums for all files in parallel using the checksum_many
+        checksums = self.checksum_many(full_paths)
+        # Populate the "sha1" column in the ParaFrame with the computed checksums
+        pf["sha1"] = [checksums[path] for path in full_paths]
 
     @classmethod
     def init(cls, path: Union[Path, str]) -> "Repo":
@@ -233,7 +283,8 @@ class Repo:
     @staticmethod
     def checksum_many(paths: list[Path]) -> dict[Path, str]:
         """
-        Hash multiple files concurrently using a caller-provided, already-open executor.
+        Hash multiple files concurrently in a thread pool this method owns, hashing
+        each unique path only once even if it appears more than once in paths.
         Args:
             paths (list[Path]): List of file paths to hash.
         Returns:
@@ -244,79 +295,12 @@ class Repo:
         # If the list of paths is empty, return an empty dictionary
         if not unique_paths:
             return {}
-        # use the provided executor to compute checksums for all files concurrently
+        # hash all unique paths concurrently using a fresh thread pool
         with ThreadPoolExecutor() as executor:
             # map the Repo.checksum function to all paths using the executor
             checksums = executor.map(Repo.checksum, unique_paths)
             # pair each path with its corresponding checksum and return as a dictionary
             return dict(zip(unique_paths, checksums))
-
-    def _worktree_path(self, value, *, label: str = "tracked path") -> Path:
-        """
-        Used by Repo.add(), Repo.commit(), Repo.checkout(), and _populate_checksums().
-        Resolve a path relative to the repository's worktree.
-        Args:
-            value (str | Path): The path to resolve.
-            label (str): Label for error messages.
-        Returns:
-            Path: Resolved path within the worktree.
-        Raises:
-            RuntimeError: If the repository has no worktree.
-        """
-        # Validate that the repository has a worktree before resolving paths
-        if self.worktree is None:
-            raise RuntimeError(
-                "cannot resolve paths without a worktree")
-        return resolve_contained_path(self.worktree, value, label=label)
-
-    def _validate_branch_name(self, value) -> str:
-        """
-        Used by Repo.checkout() and Repo.add_worktree()
-        Validate and normalize a Git branch name.
-
-        Args:
-            value (str): The branch name to validate.
-
-        Returns:
-            str: The normalized branch name.
-
-        Raises:
-            ValueError: If the branch name is invalid.
-        """
-        # Normalize the branch name to ensure it is a non-empty string
-        branch_name = normalize_nonempty_string(value, label="branch name")
-        # if the branch name starts with a hyphen, raise a ValueError
-        if branch_name.startswith("-"):
-            raise ValueError(f"invalid branch name: {branch_name!r}")
-
-        # try to validate the branch name using Git's check_ref_format command
-        try:
-            self.dothm.git.check_ref_format("--branch", branch_name)
-        # if Git raises a GitCommandError, re-raise it as a ValueError
-        except GitCommandError as exc:
-            raise ValueError(f"invalid branch name: {branch_name!r}") from exc
-
-        # if all checks pass, return the normalized branch name
-        return branch_name
-
-    def _populate_checksums(self, pf: ParaFrame) -> None:
-        """
-        Used by Repo.add()
-        Populate the "sha1" column in a ParaFrame with SHA-1 checksums of the files.
-        Args:
-            pf (ParaFrame): The ParaFrame containing file paths.
-        """
-        # If the ParaFrame is empty, there are no files to process, so return early
-        if pf.empty:
-            return
-        # Resolve full paths for all files in the ParaFrame relative to the worktree
-        full_paths = [
-            self._worktree_path(path, label="matched data path")
-            for path in pf["path"].astype(str)]
-        # Compute SHA-1 checksums for all files in parallel using the checksum_many
-        checksums = self.checksum_many(full_paths)
-        # Populate the "sha1" column in the ParaFrame with the computed checksums
-        pf["sha1"] = [checksums[path] for path in full_paths]
 
     def add_paths(self, paths: List[Union[Path, str]]) -> ParaFrame:
         '''
@@ -419,12 +403,12 @@ class Repo:
             "untracked": untracked,
         }
 
-    def add(self, fstr: str, encoding: bool = False) -> ParaFrame:
+    def add(self, fmt: str, encoding: bool = False) -> ParaFrame:
         '''
         Stage files or updated repository indecing from the worktree.
 
         Args:
-            fstr (string): Format string or "." for full directory scan.
+            fmt (string): Format string or "." for full directory scan.
             encoding (boolean): Whether to apply encoding rules.
         Returns:
             paraframe Parsed and filtered file index (without checksums).
@@ -434,15 +418,15 @@ class Repo:
                 "cannot add files in a bare repository without a worktree")
 
         # Normalize the format string to ensure it is a non-empty string
-        fstr = normalize_nonempty_string(fstr, label="format")
+        fmt = normalize_nonempty_string(fmt, label="format")
         # "." means rescan the whole worktree using the already-configured format
-        rescanning = fstr == "."
+        rescanning = fmt == "."
         # use the current branch format; otherwise, use the provided format
         if rescanning:
-            fmt = branch_fmt(self)
-            previous_fmt = fmt
+            resolved_fmt = branch_fmt(self)
+            previous_fmt = resolved_fmt
         else:
-            fmt = fstr
+            resolved_fmt = fmt
             try:
                 previous_fmt = branch_fmt(self)
             except RuntimeError:
@@ -450,7 +434,7 @@ class Repo:
         # with the working directory set to the worktree, parse files into a ParaFrame
         with chdir(self.worktree):
             pf = ParaFrame.parse(
-                fmt,
+                resolved_fmt,
                 base_path=self.worktree,
                 encodings=branch_encodings(self) if encoding else None,
                 encoding=encoding)
@@ -460,12 +444,12 @@ class Repo:
         # Compute checksums for all files in the ParaFrame in parallel
         self._populate_checksums(pf)
 
-        manifest = manifest_frame_from_pf(pf, fmt)
+        manifest = manifest_frame_from_pf(pf, resolved_fmt)
         # if not rescanning, update the repository configuration with the new format
         if not rescanning:
-            set_config(self, fmt=fmt)
-        # an explicit fstr replaces only if the fmt changed
-        if rescanning or previous_fmt != fmt:
+            set_config(self, fmt=resolved_fmt)
+        # an explicit fmt replaces only if the format actually changed
+        if rescanning or previous_fmt != resolved_fmt:
             self.state.replace(manifest)
         # if the format is unchanged, update the existing state with new entries
         else:
@@ -535,7 +519,6 @@ class Repo:
         self.dothm.index.commit(msg)
         # Return True to indicate that a commit was created
         return True
-
 
     def log(self) -> str:
         '''

@@ -12,7 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-
 """Hallmark CLI entrypoint and command wiring."""
 
 from contextlib import contextmanager
@@ -25,25 +24,23 @@ from click import ClickException
 from git.exc import GitError
 
 from . import Repo
-from .helper_functions import load_yaml_file
+from .helper_functions import validate_path_component
 from .repo_builder import build_repo
 from .downloader import (
     BULK_DOWNLOAD_WARNING_FILE_COUNT,
     DownloadError,
     download_remote_data,
     select_download_files)
-from .error import (
-    CheckoutError,
-    CloneError)
-from .repo_config import (
-    fmt_entries_from_config,
-    normalize_tsv_name,
-    validate_path_component)
+from .error import CheckoutError, CloneError
+from .repo_config import normalize_tsv_name
+
 
 # use a context manager to translate application errors into clean Click errors
 @contextmanager
 def _translate_cli_errors(*error_types, prefix=None):
     """
+    Used by hallmark, init, info, status, add, set_config, commit, log, branch,
+    checkout, download, clone, and build.
     Context manager to translate application errors into clean Click errors.
 
     Args:
@@ -67,11 +64,20 @@ def _translate_cli_errors(*error_types, prefix=None):
 # exception types translated to a clean CLI error by the hallmark commands that
 # read the repository state (status, log, branch, checkout)
 _REPO_READ_ERRORS = (
-    GitError, RuntimeError, ValueError, FileNotFoundError, CheckoutError)
+    GitError,
+    RuntimeError,
+    ValueError,
+    FileNotFoundError,
+    CheckoutError)
 
 # exception types translated to a clean CLI error by the hallmark build command
 _BUILD_DATASET_ERRORS = (
-    RuntimeError, ValueError, FileNotFoundError, FileExistsError, GitError)
+    RuntimeError,
+    ValueError,
+    FileNotFoundError,
+    FileExistsError,
+    GitError,
+    yaml.YAMLError)
 
 
 def _confirm_bulk_download(
@@ -79,7 +85,7 @@ def _confirm_bulk_download(
     assume_yes: bool,
     ) -> None:
     """
-    Used by the download and clone commands.
+    Used by _run_download.
     Prompt the user for confirmation if the number of selected files exceeds
     the warning threshold and the user has not opted to assume yes.
     Args:
@@ -100,7 +106,7 @@ def _confirm_bulk_download(
 
 def _report_download_results(results: dict) -> None:
     """
-    Used by the download and clone commands.
+    Used by _run_download.
     Report the results of the download operation to the user.
     Args:
         results (dict): A dictionary containing the download results, including
@@ -145,7 +151,9 @@ def _run_download(
     assume_yes,
     remote_name=None,
     ) -> None:
-    """Confirm, execute, and report one selected download."""
+    """
+    Used by download and clone.
+    Confirm, execute, and report one selected download."""
     # confirm with user if the number of selected files exceeds warning threshold
     _confirm_bulk_download(selected_files, assume_yes)
     # download the selected files from the remote repository
@@ -158,6 +166,7 @@ def _run_download(
         remote_name=remote_name)
     # report the results of the download operation to the user
     _report_download_results(results)
+
 
 @click.group()
 @click.version_option()
@@ -583,9 +592,9 @@ def clone(url, path, no_fetch_data, max_workers, yes):
          "for multiple remotes.")
 @click.option(
     "--config-file", "config_file",
-    type=click.Path(exists=True, dir_okay=False),
-    help="Load fmt entries (and remotes, unless --remote is also given) "
-         "from an existing config.yml, skipping the prompt entirely.")
+    type=click.Path(exists=True, dir_okay=True, file_okay=True),
+    help="Path to config.yml or a repository directory containing config.yml. "
+         "build_repo loads fmts (and remotes unless --remote is provided).")
 @click.option(
     "--fmt", "fmts", multiple=True,
     help="A fmt entry to use directly, as FMT=DB (e.g. "
@@ -639,20 +648,7 @@ def build(directory, dataset_name, remotes, config_file, fmts, overwrite):
             parsed_remotes.append({"name": entry})
 
     fmt_entries = None
-    if config_file:
-        # load the config file and extract fmt entries
-        with _translate_cli_errors(
-                OSError, ValueError, yaml.YAMLError,
-                prefix=f"Unable to load config file {config_file!r}"):
-            loaded_config = load_yaml_file(config_file)
-            fmt_entries = fmt_entries_from_config(loaded_config)
-
-        if not fmt_entries:
-            raise ClickException(f"No fmt entries found in {config_file!r}.")
-        # If no remotes were specified on the command line, use these remotes
-        if not parsed_remotes and loaded_config.get("remote"):
-            parsed_remotes = loaded_config["remote"]
-    elif fmts:
+    if fmts:
         fmt_entries = []
         for entry in fmts:
             # if the fmt entry does not contain an "=", it is invalid
@@ -684,6 +680,7 @@ def build(directory, dataset_name, remotes, config_file, fmts, overwrite):
                 repo_path=repo_path,
                 dataset_name=dataset_name,
                 fmt_entries=fmt_entries,
+                config_file=config_file,
                 remotes=parsed_remotes or None,
                 overwrite=overwrite)
     except requests.exceptions.RequestException as exc:

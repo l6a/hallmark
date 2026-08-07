@@ -25,12 +25,14 @@ import pandas as pd
 import yaml
 
 from .error import CloneError, DothmError
-from .helper_functions import atomic_output_path, load_yaml_file
-from .repo_config import validate_path_component
+from .helper_functions import (
+    atomic_output_path, load_yaml_file, validate_path_component)
 from .state import State
+
 
 class _HallmarkYamlDumper(yaml.Dumper):
     """
+    Used by dump_yaml.
     Custom YAML dumper for Hallmark that preserves the order of keys in dictionaries
     and uses literal block style for multi-line strings.
     Args:
@@ -38,8 +40,10 @@ class _HallmarkYamlDumper(yaml.Dumper):
             responsible for converting Python objects into YAML format.
     """
 
+
 def _str_presenter(dumper, data):
     """
+    Used by _HallmarkYamlDumper.
     Use literal block style ('|') for multi-line strings so they render
     as clean, readable text instead of PyYAML's default folded/escaped style.
 
@@ -60,17 +64,14 @@ def _str_presenter(dumper, data):
 # use hallmark's dumper to avoid leaking format choices into unrelated code
 _HallmarkYamlDumper.add_representer(str, _str_presenter)
 
-def _dump_yaml(data, handle) -> None:
+def dump_yaml(data, handle) -> None:
     """
-    Used by Dothm.dump_yml
     Dump a dictionary to a YAML file, preserving key order and using
     literal block style for multi-line strings.
+
     Args:
         data (dict): The dictionary to be dumped to YAML.
         handle: The file handle to write the YAML content to.
-        Dumper: The YAML dumper class to use for dumping the data.
-        sort_keys (bool): Whether to sort the keys in the output YAML.
-        width (float): The maximum line width for the output YAML. Defaults to infinity.
     """
     yaml.dump(
         data,
@@ -79,6 +80,7 @@ def _dump_yaml(data, handle) -> None:
         sort_keys=False,
         width=float("inf"))
 
+
 class Dothm(Repo):
     """Local ``.hm`` storage backend.
 
@@ -86,9 +88,9 @@ class Dothm(Repo):
     (``config.yml``, ``meta.yml``, ``data.tsv``) on-disk.
     It is itself a git worktree.
     """
-
     def _storage_path(self, stem: Union[Path, str], suffix: str) -> Path:
         """
+        Used by load_yml, dump_yml, load_tsv, and dump_tsv.
         Get the full path to a storage file in the ``.hm`` directory.
         Args:
             stem (Union[Path, str]): The stem of the file name (without extension).
@@ -232,7 +234,7 @@ remote:
             with temp_path.open("w", encoding="utf-8") as handle:
                 # Use a custom YAML dumper to preserve key order
                 # and handle multi-line strings
-                _dump_yaml(data, handle)
+                dump_yaml(data, handle)
 
     def load_tsv(self, stem: Union[Path, str]) -> pd.DataFrame:
         """

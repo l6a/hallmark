@@ -18,6 +18,7 @@ from .helper_functions import (
     file_checksum,
     valid_checksum)
 
+
 class Objects:
     """
     Manage the Hallmark object store.
@@ -45,6 +46,7 @@ class Objects:
         chunk_size: int = FILE_IO_CHUNK_SIZE,
         ) -> Path:
         """
+        Used by store and restore.
         Copy a file from src to dest atomically, verifying its SHA-1 checksum.
 
         Args:
@@ -92,6 +94,7 @@ class Objects:
     @staticmethod
     def _calculate_sha1(path: Path, chunk_size: int = FILE_IO_CHUNK_SIZE) -> str:
         """
+        Used by store and in repo by checksum.
         Calculate a file's SHA-1 checksum using streaming reads.
 
         Args:
@@ -108,6 +111,7 @@ class Objects:
     @staticmethod
     def _normalize_sha1(sha1: str) -> str:
         """
+        Used by _copy_atomically, _split_checksum, and store.
         Validate and normalize a SHA-1 checksum.
 
         Args:
@@ -134,6 +138,7 @@ class Objects:
 
     def _split_checksum(self, sha1: str) -> Path:
         """
+        Used by contains, store, and restore.
         Convert a validated SHA-1 checksum into its object-store path.
 
         Args:

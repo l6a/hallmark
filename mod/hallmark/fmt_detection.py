@@ -73,7 +73,7 @@ KNOWN_PARAM_VALUES: dict[str, set[str]] = {
                  "oj287", "sgra"},
     "algorithm": (set(CHECKSUM_ALGORITHMS) | {f"{algorithm}sums"
                     for algorithm in CHECKSUM_ALGORITHMS}),
-    "kind": {"description", "metadata", "deliverables", "checksum", "checksums"},
+    "purpose": {"description", "metadata", "deliverables", "checksum", "checksums"},
     "author": {"eht", "jlgomez", "savolainen", "sdoeleman"},}
 
 
@@ -81,6 +81,7 @@ KNOWN_PARAM_VALUES: dict[str, set[str]] = {
 @lru_cache(maxsize=8192)
 def _split_detector_value(value: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
     """
+    Used by _tokens and _delimiters.
     Split a path or format string into detector tokens and delimiters.
 
     Args:
@@ -96,6 +97,8 @@ def _split_detector_value(value: str) -> tuple[tuple[str, ...], tuple[str, ...]]
 
 def _tokens(value: str) -> list[str]:
     """
+    Used by _token_cache, _matching_paths, _known_param_tags, _finalize_param_names,
+    rescue_unmatched_paths, merge_fmts_sharing_all_literals, and combine_alike_fmts.
     Split a path or format string into detector tokens.
     Args:
         value: The path or format string to tokenize.
@@ -103,13 +106,16 @@ def _tokens(value: str) -> list[str]:
         List of tokens extracted from the input string.
     """
     # use the cached function to split the value into tokens and delimiters
-    tokens, _delimiters = _split_detector_value(value)
+    tokens, _ = _split_detector_value(value)
     # only return the tokens, ignoring the delimiters
     return list(tokens)
 
 
 def _delimiters(value: str) -> list[str]:
     """
+    Used by _paths_to_fmts, _matching_paths, _finalize_param_names,
+    _collapse_freeform_tails, _rescue_unmatched_paths, merge_fmts_sharing_all_literals,
+    combine_alike_fmts, and detect_fmt.
     Return the delimiters separating the detector tokens in *value*.
     Args:
         value: The path or format string to extract delimiters from.
@@ -117,13 +123,16 @@ def _delimiters(value: str) -> list[str]:
         List of delimiters extracted from the input string.
     """
     # use the cached function to split the value into tokens and delimiters
-    _tokens, delimiters = _split_detector_value(value)
+    _, delimiters = _split_detector_value(value)
     # only return the delimiters, ignoring the tokens
     return list(delimiters)
 
 
 def _token_cache(paths: list[str]) -> dict[str, list[str]]:
     """
+    Used by _paths_to_fmts, _matching_paths, _known_param_tags,
+    _finalize_param_names, _rescue_unmatched_paths, preserves_source_matches,
+    observed_slot_values, and detect_fmt.
     Tokenize a collection of paths once.
     Args:
         paths: List of path strings to tokenize.
@@ -135,6 +144,7 @@ def _token_cache(paths: list[str]) -> dict[str, list[str]]:
 
 def _parsed_paths(fmt: str, paths: list[str]) -> set[str]:
     """
+    Used by parsed_matches and detect_fmt.
     Return the supplied paths accepted by *fmt*.
     Args:
         fmt: The format string to match against.
@@ -154,6 +164,7 @@ def _parsed_paths(fmt: str, paths: list[str]) -> set[str]:
 
 def _infer_param(observed: set[str], fallback: str) -> str:
     """
+    Used by _paths_to_fmts and reconcile_region.
     Infer the parameter name for a set of observed values.
 
     Args:
@@ -178,8 +189,10 @@ def _infer_param(observed: set[str], fallback: str) -> str:
     # if no known pattern matches, return the fallback parameter name (pN)
     return fallback
 
+
 def _paths_to_fmts(paths: list[str]) -> list[str]:
     """
+    Used by self and detect_fmt.
     Given a list of paths, return a list of format strings (fmts) that describe
     the variable parts of the paths.
 
@@ -369,9 +382,11 @@ def _paths_to_fmts(paths: list[str]) -> list[str]:
 
     return fmts
 
+
 def _align(first_tokens: list[str], second_tokens: list[str]) \
                     -> tuple[set[int], bool] | None:
     """
+    Used by combine_alike_fmts.
     Determine the positions where two token lists differ and whether they have
     any genuine matches (i.e., tokens that are the same and not parameters).
 
@@ -405,6 +420,9 @@ def _align(first_tokens: list[str], second_tokens: list[str]) \
 
 def _is_param(token: str) -> bool:
     """
+    Used by _align, _literal_tokens, _known_param_tags, _matching_paths,
+    _finalize_param_names, _rescue_unmatched_paths, merge_fmts_sharing_all_literals,
+    and combine_alike_fmts.
     Check if a token is a parameter (i.e., enclosed in curly braces).
 
     Args:
@@ -418,6 +436,8 @@ def _is_param(token: str) -> bool:
 
 def _is_generic_param(token: str) -> bool:
     """
+    Used by is_generic_tail, reconcile_region,
+    and merge_fmts_sharing_all_literals.
     Check if a token is a generic parameter of the form {pN}.
 
     Args:
@@ -432,6 +452,8 @@ def _is_generic_param(token: str) -> bool:
 def _generic_param_names(
         *token_lists: list[str], used: set[int] | None = None) -> Iterator[str]:
     """
+    Used by _rescue_unmatched_paths, merge_fmts_sharing_all_literals,
+    and combine_alike_fmts.
     Yield successive unused "pN" names, e.g. for pulling one via next(...), or
     repeatedly from a single generator instance to keep avoiding each other.
 
@@ -469,6 +491,8 @@ def _generic_param_names(
 def _literal_tokens(
     tokens: list[str], *, alphanumeric_only: bool = False) -> list[str]:
     """
+    Used by _rescue_unmatched_paths, observed_slot_values,
+    and combine_alike_fmts.
     Return the literal (non-parameter) tokens from a token sequence.
 
     Args:
@@ -488,6 +512,7 @@ def _literal_tokens(
 
 def _majority_tokens(token_groups: list[list[str]]) -> set[str]:
     """
+    Used by _rescue_unmatched_paths and combine_alike_fmts.
     Return the set of tokens that appear in more than half of the token groups.
 
     Args:
@@ -513,6 +538,9 @@ def _majority_tokens(token_groups: list[list[str]]) -> set[str]:
 
 def _join_tokens_with_delims(tokens: list[str], delims: list[str]) -> str:
     """
+    Used by _paths_to_fmts, _finalize_param_names, _collapse_freeform_tails,
+    _rescue_unmatched_paths, merge_fmts_sharing_all_literals, combine_alike_fmts,
+    and detect_fmt.
     Reconstruct a fmt (or path) string from its tokens and the delimiters
     that originally separated them.
 
@@ -536,6 +564,7 @@ def _join_tokens_with_delims(tokens: list[str], delims: list[str]) -> str:
 
 def _is_drive_path(path: Path) -> bool:
     """
+    Used by detect_fmt.
     Return True if path looks like a drive/archive file.
 
     Args:
@@ -558,6 +587,8 @@ def _matching_paths(
         path_tokens_cache: dict[str, list[str]] | None = None,
         ) -> list[str]:
     """
+    Used by _finalize_param_names, compatible_paths, matches_by_fmt,
+    and _known_param_tags.
     Return paths whose token sequence is compatible with *fmt*.
 
     Args:
@@ -594,6 +625,7 @@ def _known_param_tags(
         matches: list[str] | None = None,
         ) -> set[str]:
     """
+    Used by detect_fmt.
     Return known parameter names supported by *fmt*'s observed values.
 
     Args:
@@ -632,6 +664,7 @@ def _known_param_tags(
                 break
     return tags
 
+
 def _finalize_param_names(
         fmt: str,
         data_paths: list[str],
@@ -639,6 +672,7 @@ def _finalize_param_names(
         matches: list[str] | None = None,
         ) -> str:
     """
+    Used by finalize_supported.
     Renumber "pN" fallback parameter names sequentially and disambiguate any known
     parameter name collisions across all paths that match the fmt.
 
@@ -743,8 +777,10 @@ def _finalize_param_names(
     # reconstruct the fmt string with the delimiters in between the tokens
     return _join_tokens_with_delims(new_tokens, delims)
 
+
 def _collapse_freeform_tails(fmts: list[str]) -> list[str]:
     """
+    Used by finalize_supported.
     Collapse fmts that share a common prefix and suffix but have freeform tails
     (i.e., parameters in the middle) into a single fmt with a generic parameter.
 
@@ -853,6 +889,92 @@ def _collapse_freeform_tails(fmts: list[str]) -> list[str]:
 
     # return the list of fmts after collapsing freeform tails
     return result
+
+
+def _rescue_unmatched_paths(fmts: list[str], unmatched_paths: list[str]) -> list[str]:
+    """
+    Used by detect_fmt.
+    Attempt to rescue unmatched paths by aligning them with existing fmts and
+    creating new fmts that include a new parameter for the unmatched portion.
+
+    Args:
+        fmts: List of existing fmt strings.
+        unmatched_paths: List of paths that did not match any existing fmt.
+
+    Returns:
+        List of fmt strings with rescued unmatched paths included.
+    """
+    # result_fmts is a copy of the input that will be modified to include rescued paths
+    result_fmts = list(fmts)
+    # cache the tokenized forms of the fmts to avoid redundant tokenization
+    fmt_tokens_cache = _token_cache(fmts)
+    # create a set of common tokens that appear in more than half of the fmts
+    common_tokens = _majority_tokens([
+        _literal_tokens(tokens) for tokens in fmt_tokens_cache.values()])
+
+    for path in unmatched_paths:
+        path_tokens = _tokens(path)
+
+        # best is the fmt that has the longest shared prefix and suffix with the path
+        best_idx = None
+        best_prefix_len = 0
+        best_suffix_len = 0
+        # iterate over each fmt and check how well it aligns with the unmatched path
+        for idx, fmt in enumerate(result_fmts):
+            fmt_tokens = _tokens(fmt)
+            # min length is the length of the shorter of the two token lists
+            min_len = min(len(fmt_tokens), len(path_tokens))
+
+            # counts if the tokens match and neither is a param or common token
+            def is_distinctive_match(pair: tuple[str, str]) -> bool:
+                """Check if the pair of tokens are a distinctive match
+                (same literal, not a param, not common)."""
+                # unpack the pair of tokens from fmt and path
+                fmt_tok, path_tok = pair
+                return (fmt_tok == path_tok and not _is_param(fmt_tok)
+                        and fmt_tok not in common_tokens)
+
+            # prefix/suffix length is how many matching tokens run from that end
+            prefix_len = sum(1 for _ in takewhile(is_distinctive_match,
+                                                  zip(fmt_tokens, path_tokens)))
+            suffix_len = sum(1 for _ in takewhile(is_distinctive_match,
+                                    zip(reversed(fmt_tokens), reversed(path_tokens))))
+            # if the combined length is greater than or equal to the minimum length
+            if prefix_len + suffix_len >= min_len:
+                # skip this fmt because it is not a genuine match (it would overlap)
+                continue
+            # if both lengths are at least 1, consider this fmt for alignment
+            if prefix_len >= 1 and suffix_len >= 1:
+                # if this fmt has a longer combined prefix and suffix than the best
+                if prefix_len + suffix_len > best_prefix_len + best_suffix_len:
+                    # update the best values to this fmt's index and lengths
+                    best_idx = idx
+                    best_prefix_len = prefix_len
+                    best_suffix_len = suffix_len
+        # if no fmt was found that aligns with the unmatched path, skip to the next path
+        if best_idx is None:
+            continue
+
+        # reconstruct the fmt with a new parameter in the middle
+        fmt = result_fmts[best_idx]
+        fmt_tokens = _tokens(fmt)
+        fmt_delims = _delimiters(fmt)
+        prefix_tokens = fmt_tokens[:best_prefix_len]
+        suffix_tokens = fmt_tokens[len(fmt_tokens) - best_suffix_len:]
+        # construct the new fmt with the shared prefix, new parameter, and shared suffix
+        new_param = next(_generic_param_names(prefix_tokens, suffix_tokens))
+        new_tokens = prefix_tokens + [f"{{{new_param}}}"] + suffix_tokens
+        # reconstruct the delimiters to match the new token structure
+        new_delims = (
+            fmt_delims[:best_prefix_len - 1]
+            + [fmt_delims[best_prefix_len - 1]]
+            + [fmt_delims[len(fmt_tokens) - best_suffix_len - 1]]
+            + fmt_delims[len(fmt_tokens) - best_suffix_len:])
+        result_fmts[best_idx] = _join_tokens_with_delims(new_tokens, new_delims)
+
+    # return the list of fmts after rescuing unmatched paths
+    return result_fmts
+
 
 def merge_fmts_sharing_all_literals(
         fmts: list[str],
@@ -1114,90 +1236,6 @@ def merge_fmts_sharing_all_literals(
         result[i] = _join_tokens_with_delims(new_tokens, delims)
 
     return result
-
-
-def _rescue_unmatched_paths(fmts: list[str], unmatched_paths: list[str]) -> list[str]:
-    """
-    Attempt to rescue unmatched paths by aligning them with existing fmts and
-    creating new fmts that include a new parameter for the unmatched portion.
-
-    Args:
-        fmts: List of existing fmt strings.
-        unmatched_paths: List of paths that did not match any existing fmt.
-
-    Returns:
-        List of fmt strings with rescued unmatched paths included.
-    """
-    # result_fmts is a copy of the input that will be modified to include rescued paths
-    result_fmts = list(fmts)
-    # cache the tokenized forms of the fmts to avoid redundant tokenization
-    fmt_tokens_cache = _token_cache(fmts)
-    # create a set of common tokens that appear in more than half of the fmts
-    common_tokens = _majority_tokens([
-        _literal_tokens(tokens) for tokens in fmt_tokens_cache.values()])
-
-    for path in unmatched_paths:
-        path_tokens = _tokens(path)
-
-        # best is the fmt that has the longest shared prefix and suffix with the path
-        best_idx = None
-        best_prefix_len = 0
-        best_suffix_len = 0
-        # iterate over each fmt and check how well it aligns with the unmatched path
-        for idx, fmt in enumerate(result_fmts):
-            fmt_tokens = _tokens(fmt)
-            # min length is the length of the shorter of the two token lists
-            min_len = min(len(fmt_tokens), len(path_tokens))
-
-            # counts if the tokens match and neither is a param or common token
-            def is_distinctive_match(pair: tuple[str, str]) -> bool:
-                """Check if the pair of tokens are a distinctive match
-                (same literal, not a param, not common)."""
-                # unpack the pair of tokens from fmt and path
-                fmt_tok, path_tok = pair
-                return (fmt_tok == path_tok and not _is_param(fmt_tok)
-                        and fmt_tok not in common_tokens)
-
-            # prefix/suffix length is how many matching tokens run from that end
-            prefix_len = sum(1 for _ in takewhile(is_distinctive_match,
-                                                  zip(fmt_tokens, path_tokens)))
-            suffix_len = sum(1 for _ in takewhile(is_distinctive_match,
-                                    zip(reversed(fmt_tokens), reversed(path_tokens))))
-            # if the combined length is greater than or equal to the minimum length
-            if prefix_len + suffix_len >= min_len:
-                # skip this fmt because it is not a genuine match (it would overlap)
-                continue
-            # if both lengths are at least 1, consider this fmt for alignment
-            if prefix_len >= 1 and suffix_len >= 1:
-                # if this fmt has a longer combined prefix and suffix than the best
-                if prefix_len + suffix_len > best_prefix_len + best_suffix_len:
-                    # update the best values to this fmt's index and lengths
-                    best_idx = idx
-                    best_prefix_len = prefix_len
-                    best_suffix_len = suffix_len
-        # if no fmt was found that aligns with the unmatched path, skip to the next path
-        if best_idx is None:
-            continue
-
-        # reconstruct the fmt with a new parameter in the middle
-        fmt = result_fmts[best_idx]
-        fmt_tokens = _tokens(fmt)
-        fmt_delims = _delimiters(fmt)
-        prefix_tokens = fmt_tokens[:best_prefix_len]
-        suffix_tokens = fmt_tokens[len(fmt_tokens) - best_suffix_len:]
-        # construct the new fmt with the shared prefix, new parameter, and shared suffix
-        new_param = next(_generic_param_names(prefix_tokens, suffix_tokens))
-        new_tokens = prefix_tokens + [f"{{{new_param}}}"] + suffix_tokens
-        # reconstruct the delimiters to match the new token structure
-        new_delims = (
-            fmt_delims[:best_prefix_len - 1]
-            + [fmt_delims[best_prefix_len - 1]]
-            + [fmt_delims[len(fmt_tokens) - best_suffix_len - 1]]
-            + fmt_delims[len(fmt_tokens) - best_suffix_len:])
-        result_fmts[best_idx] = _join_tokens_with_delims(new_tokens, new_delims)
-
-    # return the list of fmts after rescuing unmatched paths
-    return result_fmts
 
 
 def combine_alike_fmts(

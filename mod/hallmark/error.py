@@ -12,9 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-
 """Error hierarchy for Hallmark."""
-
 
 from pathlib import Path
 from typing import Optional, Union

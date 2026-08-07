@@ -5,29 +5,8 @@ from collections.abc import Iterator
 
 import pandas as pd
 
+from .helper_functions import safe_str
 from .repo_config import fmt_fields, row_to_path, single_data_fmt
-
-
-def _safe_str(value) -> str | None:
-    """
-    Convert a value to string, handling None and NaN values.
-
-    Args:
-        value: The value to convert.
-
-    Returns:
-        The string representation of the value, or None if the value is None or NaN.
-    """
-    if value is None:
-        return None
-    # if the value is a scalar and is NaN, return None
-    if pd.api.types.is_scalar(value) and pd.isna(value):
-        return None
-    # if the value is a float and is an integer, return it as an integer string
-    if isinstance(value, float) and value.is_integer():
-        return str(int(value))
-    # otherwise, return the string representation of the value
-    return str(value)
 
 
 def manifest_frame_from_pf(pf, fmt: str) -> pd.DataFrame:
@@ -61,8 +40,8 @@ def manifest_frame_from_pf(pf, fmt: str) -> pd.DataFrame:
         row = {"sha1": record["sha1"]}
         # Update the row with the extracted fields
         row.update({field: (
-            # use _safe_str to handle None and NaN values
-            _safe_str(record[field]) if field in pf_columns else None)
+            # use safe_str to handle None and NaN values
+            safe_str(record[field]) if field in pf_columns else None)
             for field in fields})
         rows.append(row)
 

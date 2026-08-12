@@ -165,6 +165,16 @@ class Objects:
         """
         return self._split_checksum(sha1).is_file()
 
+    def object_path(self, sha1: str) -> Path:
+        """
+        Return the path where a checksum's object is (or would be) stored.
+        Args:
+            sha1 (str): SHA-1 checksum to locate.
+        Returns:
+            Path: Path to the object in this store.
+        """
+        return self._split_checksum(sha1)
+
     def missing(self, checksums: Iterable[str]) -> list[str]:
         """
         Return a sorted list of checksums that are not present in the object store.

@@ -2744,3 +2744,106 @@ def test_clone_error_replaces_complete_resolved_path(monkeypatch, tmp_path):
     assert str(result) == ("fatal: destination path 'destination' already exists"), \
         f"Expected error message to replace resolved path with display path, \
             got: {str(result)}"
+
+
+def test_checkout_remote_branch(tmp_path):
+    '''
+    Test that checkout can create a local branch from a remote branch.
+    '''
+
+
+    # Create a source repository that will act as the remote repository.
+    source = Repo.init(tmp_path / "source")
+
+    (source.worktree / "data.txt").write_text(
+        "main contents\n",
+        encoding="utf-8",
+    )
+
+    # Configure the repository's data format and commit the initial state.
+    source.add("data.txt")
+    source.commit("Initial commit")
+
+
+    # Clone the source while it only has the main branch.
+    clone = Repo.clone(
+        str(source.dothm.path),
+        tmp_path / "clone",
+        fetch_data=False,
+    )
+
+    # The cloned repository should have the tracked file in its worktree.
+    (clone.worktree / "data.txt").write_text(
+        "main contents\n",
+        encoding="utf-8",
+    )
+
+    # Create the experiment branch in the source repository AFTER cloning.
+    source.checkout("experiment")
+
+    # Change the file on the experiment branch and commit it.
+    (source.worktree / "data.txt").write_text(
+        "experiment contents\n",
+        encoding="utf-8",
+    )
+    source.add(".")
+    source.commit("Experiment commit")
+    # Change the file on the experiment branch and commit it.
+
+    print("SOURCE OBJECTS AFTER EXPERIMENT COMMIT:")
+    for p in (source.dothm.path / "objects").rglob("*"):
+        if p.is_file():
+            print(p)
+
+    print("CLONE OBJECTS BEFORE FETCH:")
+    for p in (clone.dothm.path / "objects").rglob("*"):
+        if p.is_file():
+            print(p)
+
+    # Fetch the newly-created remote branch into the clone.
+    clone.dothm.git.fetch("origin")
+
+    print("CLONE OBJECTS AFTER FETCH:")
+    for p in (clone.dothm.path / "objects").rglob("*"):
+        if p.is_file():
+            print(p)
+
+    print("REMOTE EXPERIMENT DATA:")
+    print(clone.dothm.git.show("origin/experiment:data.tsv"))
+
+    # The experiment branch should exist remotely but not locally.
+    local_branches = {head.name for head in clone.dothm.heads}
+    assert "experiment" not in local_branches
+
+    remote_branches = {
+        ref.remote_head
+        for remote in clone.dothm.remotes
+        for ref in remote.refs
+        if ref.remote_head != "HEAD"
+    }
+    assert "experiment" in remote_branches
+    print("\n=== CLONE BRANCHES ===")
+    print(clone.dothm.git.branch("-a"))
+
+    print("\n=== REMOTE REFS ===")
+    for remote in clone.dothm.remotes:
+        for ref in remote.refs:
+            print(ref)
+
+    print("\n=== REMOTE EXPERIMENT COMMIT ===")
+    print(clone.dothm.git.rev_parse("origin/experiment"))
+
+    print("\n=== REMOTE EXPERIMENT FILES ===")
+    print(clone.dothm.git.ls_tree("-r", "--name-only", "origin/experiment"))
+
+    # This is the behavior we are testing:
+    # checkout should create a local tracking branch from the remote branch.
+    clone.checkout("experiment")
+
+    # Checkout should have created and switched to the local branch.
+    assert clone.dothm.active_branch.name == "experiment"
+
+    # The worktree should now contain the version from the remote branch.
+    assert (clone.worktree / "data.txt").read_text(
+        encoding="utf-8"
+    ) == "experiment contents\n"

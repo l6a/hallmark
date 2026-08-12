@@ -29,7 +29,9 @@ from .worktree import Worktree
 from .objects import Objects
 from .paraframe import ParaFrame
 from .repo_manifest import manifest_frame_from_pf, manifest_map, iter_manifest_entries
-from .repo_state import load_branch_data, load_head_state
+from .repo_state import (
+    load_branch_data, load_head_state, find_remote_branch,
+    fetch_missing_objects_from_remote)
 from .error import CheckoutError, DestinationExistsError, DothmError
 from .helper_functions import (
     FILE_IO_CHUNK_SIZE,
@@ -564,8 +566,15 @@ class Repo:
             raise CheckoutError("cannot checkout without a worktree")
         ensure_clean_tracked_files(self)
 
-        existing = {head.name for head in self.dothm.heads}
-        new_branch = target_branch not in existing
+        local_branches = {head.name for head in self.dothm.heads}
+        has_local = target_branch in local_branches
+
+        # Look for a matching branch on any configured remote.
+        # Returns something like "origin/feature" or None if no remote branch exists.
+        remote_revision = find_remote_branch(self, target_branch)
+        has_remote = remote_revision is not None
+
+        create_new_branch = not has_local and not has_remote
         current_tracked = tracked_paths(self)
         target_state = load_branch_data(self, target_branch)
         # Get the data format string for the target branch configuration
@@ -589,6 +598,14 @@ class Repo:
         # if a ValueError occurs during object existence check, raise a CheckoutError
         except ValueError as exc:
             raise CheckoutError(str(exc)) from exc
+
+        # if switching to a remote-tracking branch, try to fetch any missing
+        # objects from that remote before giving up
+        if missing_objects and has_remote:
+            remote_name = remote_revision.split("/", 1)[0]
+            missing_objects = sorted(fetch_missing_objects_from_remote(
+                self, remote_name, missing_objects))
+
         # if there are missing objects, raise a CheckoutError with details
         if missing_objects:
             raise CheckoutError(
@@ -695,10 +712,15 @@ class Repo:
             # try to switch branches and update the worktree with the target files
             try:
                 # if the target branch is new, create and switch to it
-                if new_branch:
-                    self.dothm.git.checkout("-b", target_branch)
-                else:
+                if has_local:
                     self.dothm.git.checkout(target_branch)
+
+                elif has_remote:
+                    self.dothm.git.checkout("--track",remote_revision)
+
+                else:
+                    self.dothm.git.checkout("-b", target_branch)
+
                 # Reload the repository state after switching branches
                 self.state = self.dothm.load()
 
@@ -765,7 +787,7 @@ class Repo:
                             f"{rollback_exc}")
 
                 # if the target branch was newly created and exists in the repository
-                if new_branch and target_branch in {
+                if create_new_branch and target_branch in {
                     head.name for head in self.dothm.heads}:
                     # try to delete the newly created branch to rollback the checkout
                     try:

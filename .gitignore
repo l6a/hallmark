@@ -4,9 +4,6 @@
 !*.*py
 !*.*ml
 !*file
-!demo/demo_cli.ipynb
-!demo/demo_python.ipynb
-!demo/demo_datatree.ipynb
 !*.py.old
 
 __pycache__/
@@ -19,3 +16,6 @@ __pycache__/
 
 # Ignore Sphinx build output by default
 _build/
+
+/demo/
+/cli_test_repos/

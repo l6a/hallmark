@@ -26,6 +26,8 @@ authors = [
     {name = "Rohin Sant"},
     {name = "Ram Adithya"},
     {name = "Hayden Foote"},
+    {name = "Samuel Jacobs"},
+    {name = "Yaqing Su"}
 ]
 
 [project.scripts]
@@ -43,6 +45,9 @@ lint = ["ruff"]
 
 [tool.setuptools.packages.find]
 where = ["mod"]
+
+[tool.ruff]
+target-version = "py39"
 
 [tool.ruff.lint]
 select = ["E", "F"]
